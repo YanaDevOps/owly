@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Owly</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/theme.js"></script>
+    <link rel="icon" type="image/png" href="/owly-logo.png">
+    <link rel="apple-touch-icon" href="/owly-logo.png">
+    <link rel="stylesheet" href="/third-party/roboto/roboto.css">
+    <link rel="stylesheet" href="/common.css">
+    <link rel="stylesheet" href="/mainpage.css">
+    <link rel="stylesheet" type="text/css" href="/galene.css"/>
+    <link rel="stylesheet" type="text/css" href="/third-party/fontawesome/css/fontawesome.min.css"/>
+    <link rel="stylesheet" type="text/css" href="/third-party/fontawesome/css/solid.min.css"/>
+  </head>
+
+  <body>
+    <div class="landing-scene" aria-hidden="true"></div>
+    <div class="landing-scene landing-scene-secondary" aria-hidden="true"></div>
+
+    <main class="home">
+      <section class="home-hero">
+        <div class="home-brand">
+          <img class="home-logo" src="/owly-logo.png" alt="Owly logo"/>
+          <div class="home-copy">
+            <p class="home-kicker">Focused communication</p>
+            <h1 id="title" class="navbar-brand">Owly</h1>
+            <p class="home-subtitle">Join a room in seconds for calmer, clearer conversations.</p>
+          </div>
+        </div>
+
+        <form id="groupform">
+          <label for="group">Group:</label>
+          <input id="group" type="text" name="group" class="form-control form-control-inline" autofocus/>
+          <input id='submitbutton' type="submit" value="Join" class="btn btn-default btn-large"/>
+        </form>
+
+        <div class="home-actions">
+          <button id="theme-toggle" type="button" title="Switch to dark mode">
+            <i class="fas fa-moon" aria-hidden="true"></i>
+            <span id="theme-label">Dark mode</span>
+          </button>
+        </div>
+
+        <p id="errormessage"></p>
+      </section>
+    </main>
+    <footer class="signature">
+      <p>Owly</p>
+    </footer>
+    
+    <script src="/mainpage.js" defer></script>
+    
+  </body>
+</html>

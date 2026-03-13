@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Owly</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="ScreenOrientation" content="autoRotate:disabled">
+    <script src="/theme.js"></script>
+    <link rel="icon" type="image/png" href="/owly-logo.png">
+    <link rel="apple-touch-icon" href="/owly-logo.png">
+    <link rel="stylesheet" type="text/css" href="/third-party/roboto/roboto.css"/>
+    <link rel="stylesheet" type="text/css" href="/common.css"/>
+    <link rel="stylesheet" type="text/css" href="/galene.css"/>
+    <link rel="stylesheet" type="text/css" href="/third-party/fontawesome/css/fontawesome.min.css"/>
+    <link rel="stylesheet" type="text/css" href="/third-party/fontawesome/css/solid.min.css"/>
+    <link rel="stylesheet" type="text/css" href="/third-party/fontawesome/css/regular.min.css"/>
+    <link rel="stylesheet" type="text/css" href="/third-party/toastify/toastify.css"/>
+    <link rel="stylesheet" type="text/css" href="/third-party/contextual/contextual.css"/>
+  </head>
+
+  <body>
+    <div id="main" class="app app-shell">
+      <header class="app-header">
+        <div class="header-brand">
+          <span class="header-kicker">Owly</span>
+          <div id="header" class="header-title-wrap">
+            <h1 id="title" class="header-title">Owly</h1>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <div class="header-group header-chat-group">
+            <button id="chatbutton" class="invisible header-action header-chat-toggle" type="button" aria-label="Open chat">
+              <i class="fas fa-comment-alt" aria-hidden="true"></i>
+              <span>Chat</span>
+            </button>
+          </div>
+
+          <div class="header-group header-present-group">
+            <button id="presentbutton" class="invisible btn btn-success header-present" type="button" aria-label="Enable media">
+              <i class="fas fa-play" aria-hidden="true"></i>
+              <span class="nav-text">Enable</span>
+            </button>
+
+            <button id="unpresentbutton" class="invisible btn btn-cancel header-present" type="button" aria-label="Disable media">
+              <i class="fas fa-stop" aria-hidden="true"></i>
+              <span class="nav-text">Disable</span>
+            </button>
+          </div>
+
+          <div class="header-group header-profile-group">
+            <div id="profile" class="profile header-profile invisible">
+              <div class="profile-user">
+                <div class="profile-logo" id="profile-avatar">
+                  <span id="profile-initials">G</span>
+                </div>
+                <div class="profile-info">
+                  <span id="userspan"></span>
+                  <span id="permspan"></span>
+                  <span id="chpwspan" class="invisible"><a id="change-password">Change password</a></span>
+                </div>
+                <button id="disconnectbutton" class="user-logout" type="button" aria-label="Leave call">
+                  <span class="logout-icon"><i class="fas fa-sign-out-alt" aria-hidden="true"></i></span>
+                  <span class="logout-text">Leave</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="header-group header-workspace-group">
+            <button id="workspace-toggle-mobile" class="invisible header-action workspace-toggle-mobile" type="button" aria-label="Open workspace">
+              <i class="fas fa-bars" aria-hidden="true"></i>
+              <span>Workspace</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="conference-layout" id="mainrow">
+        <nav class="tool-rail" aria-label="Conference tools">
+          <button class="tool-rail-button active" id="tool-media" type="button" data-panel="media">
+            <i class="fas fa-microphone-alt" aria-hidden="true"></i>
+            <span>Devices</span>
+          </button>
+          <button class="tool-rail-button" id="tool-video" type="button" data-panel="video">
+            <i class="fas fa-sliders-h" aria-hidden="true"></i>
+            <span>Settings</span>
+          </button>
+          <button class="tool-rail-button" id="tool-filters" type="button" data-panel="filters">
+            <i class="fas fa-magic" aria-hidden="true"></i>
+            <span>Filters</span>
+          </button>
+        </nav>
+
+        <aside id="sidebarnav" class="sidenav tool-panel">
+          <div class="sidenav-header">
+            <div>
+              <p class="tool-panel-kicker">Workspace</p>
+              <h2 id="tool-panel-heading">Devices</h2>
+            </div>
+            <button class="closebtn" id="clodeside" type="button" aria-label="Close settings">
+              <i class="fas fa-times" aria-hidden="true"></i>
+            </button>
+          </div>
+
+          <div class="sidenav-content" id="optionsdiv">
+            <section class="tool-section active" data-panel="media">
+              <div class="tool-card">
+                <h3>Camera and microphone</h3>
+                <p>Choose capture devices and control how your local feed is produced.</p>
+
+                <div id="mediaoptions" class="invisible media-options">
+                  <label for="videoselect" class="sidenav-label-first">Camera</label>
+                  <select id="videoselect" class="select select-inline">
+                    <option value="">off</option>
+                  </select>
+
+                  <label for="audioselect" class="sidenav-label">Microphone</label>
+                  <select id="audioselect" class="select select-inline">
+                    <option value="">off</option>
+                  </select>
+
+                  <div id="audiooutputrow" class="audio-output-row">
+                    <label for="audiooutputselect" class="sidenav-label">Output</label>
+                    <select id="audiooutputselect" class="select select-inline">
+                      <option value="">Browser default</option>
+                    </select>
+                    <p id="audiooutputhint" class="select-help invisible">
+                      Output switching isn’t supported in this browser.
+                    </p>
+                  </div>
+
+                  <form>
+                    <input id="mirrorbox" type="checkbox" checked/>
+                    <label for="mirrorbox">Mirror view</label>
+                  </form>
+
+                  <form>
+                    <input id="preprocessingbox" type="checkbox" checked/>
+                    <label for="preprocessingbox">Noise suppression</label>
+                  </form>
+
+                  <form>
+                    <input id="hqaudiobox" type="checkbox"/>
+                    <label for="hqaudiobox">High-quality audio</label>
+                  </form>
+                </div>
+              </div>
+            </section>
+
+            <section class="tool-section" data-panel="video">
+              <div class="tool-card">
+                <h3>Video behavior</h3>
+                <p>Adjust delivery quality, layout helpers, and conference visibility rules.</p>
+
+                <form id="sendform">
+                  <label for="sendselect" class="sidenav-label-first">Send</label>
+                  <select id="sendselect" class="select select-inline">
+                    <option value="lowest">lowest</option>
+                    <option value="low">low</option>
+                    <option value="normal" selected>normal</option>
+                    <option value="unlimited">unlimited</option>
+                  </select>
+                </form>
+
+                <form id="simulcastform">
+                  <label for="simulcastselect" class="sidenav-label-first">Simulcast</label>
+                  <select id="simulcastselect" class="select select-inline">
+                    <option value="off">off</option>
+                    <option value="auto" selected>auto</option>
+                    <option value="on">on</option>
+                  </select>
+                </form>
+
+                <form id="requestform">
+                  <label for="requestselect" class="sidenav-label">Receive</label>
+                  <select id="requestselect" class="select select-inline">
+                    <option value="">nothing</option>
+                    <option value="audio">audio only</option>
+                    <option value="screenshare">screenshare only</option>
+                    <option value="everything-low">low quality</option>
+                    <option value="everything" selected>everything</option>
+                  </select>
+                </form>
+
+                <form>
+                  <input id="activitybox" type="checkbox"/>
+                  <label for="activitybox">Activity detection</label>
+                </form>
+
+                <form>
+                  <input id="displayallbox" type="checkbox"/>
+                  <label for="displayallbox">Display audio-only users</label>
+                </form>
+
+                <form>
+                  <input id="blackboardbox" type="checkbox"/>
+                  <label for="blackboardbox">Blackboard mode</label>
+                </form>
+
+                <div class="theme-row">
+                  <label class="sidenav-label-first">Appearance</label>
+                  <button id="theme-toggle" type="button" title="Switch to dark mode">
+                    <i class="fas fa-moon" aria-hidden="true"></i>
+                    <span id="theme-label">Dark mode</span>
+                  </button>
+                </div>
+              </div>
+
+              <div id="sharelink-section" class="invisible tool-card">
+                <h3>Invite</h3>
+                <p>Share the existing group access link without changing storage or permission rules.</p>
+                <button id="sharelinkbutton" class="btn btn-default" type="button">
+                  <i class="fas fa-link" aria-hidden="true"></i>
+                  <span>Copy invite link</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="tool-section" data-panel="filters">
+              <div class="tool-card">
+                <h3>Filters and background</h3>
+                <p>Apply the existing video effects without changing conferencing behavior.</p>
+
+                <form id="filterform">
+                  <label for="filterselect" class="sidenav-label-first">Filter</label>
+                  <select id="filterselect" class="select select-inline">
+                    <option value="" selected>none</option>
+                  </select>
+                </form>
+
+                <div id="background-image-controls" class="invisible">
+                  <label class="sidenav-label">Background</label>
+
+                  <div id="bg-presets" class="bg-preset-grid">
+                    <div class="bg-preset-item" data-bg="/backgrounds/office.jpg">
+                      <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" data-src="/backgrounds/office.jpg" loading="lazy" decoding="async" alt="Office">
+                    </div>
+                    <div class="bg-preset-item" data-bg="/backgrounds/library.jpg">
+                      <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" data-src="/backgrounds/library.jpg" loading="lazy" decoding="async" alt="Library">
+                    </div>
+                    <div class="bg-preset-item" data-bg="/backgrounds/nature1.jpg">
+                      <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" data-src="/backgrounds/nature1.jpg" loading="lazy" decoding="async" alt="Nature 1">
+                    </div>
+                    <div class="bg-preset-item" data-bg="/backgrounds/nature2.jpg">
+                      <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" data-src="/backgrounds/nature2.jpg" loading="lazy" decoding="async" alt="Nature 2">
+                    </div>
+                    <div class="bg-preset-item" data-bg="/backgrounds/abstract1.jpg">
+                      <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" data-src="/backgrounds/abstract1.jpg" loading="lazy" decoding="async" alt="Abstract 1">
+                    </div>
+                    <div class="bg-preset-item" data-bg="/backgrounds/abstract2.jpg">
+                      <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" data-src="/backgrounds/abstract2.jpg" loading="lazy" decoding="async" alt="Abstract 2">
+                    </div>
+                    <div class="bg-preset-item" data-bg="/backgrounds/city.jpg">
+                      <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" data-src="/backgrounds/city.jpg" loading="lazy" decoding="async" alt="City">
+                    </div>
+                    <div class="bg-preset-item" data-bg="/backgrounds/minimal.jpg">
+                      <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" data-src="/backgrounds/minimal.jpg" loading="lazy" decoding="async" alt="Minimal">
+                    </div>
+                  </div>
+
+                  <button id="upload-bg-button" type="button" class="btn btn-secondary">
+                    <i class="fas fa-upload" aria-hidden="true"></i>
+                    <span>Upload custom image</span>
+                  </button>
+
+                  <div id="custom-bg-label" class="invisible">
+                    Custom: <span id="bg-filename"></span>
+                    <button id="clear-bg-button" type="button" class="btn-link">
+                      <i class="fas fa-times" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+            </section>
+          </div>
+        </aside>
+
+        <div class="conference-main-wrap" id="right">
+          <div class="video-container invisible" id="video-container">
+            <div class="conference-stage">
+              <div class="stage-topline">
+                <div class="stage-meta">
+                  <span class="stage-dot"></span>
+                  <span id="stage-label">Live conference</span>
+                </div>
+                <div class="stage-meta stage-meta-count" id="participant-count">0 participants</div>
+              </div>
+
+              <div id="conference-grid-host" class="conference-grid-host">
+                <div id="mosaic-grid" class="mosaic-grid"></div>
+              </div>
+
+              <div class="stage-card" id="stage-card">
+                <div id="stage-slot" class="stage-slot"></div>
+              </div>
+
+              <div id="self-preview-slot" class="self-preview-slot invisible" aria-hidden="true"></div>
+              <button id="focus-close" class="focus-close invisible" type="button" aria-label="Close focused video">
+                <i class="fas fa-times" aria-hidden="true"></i>
+              </button>
+              <button id="stage-fullscreen" class="stage-fullscreen invisible" type="button" aria-label="Open shared screen fullscreen">
+                <i class="fas fa-expand" aria-hidden="true"></i>
+              </button>
+              <div id="stage-empty" class="stage-empty">
+                <div class="stage-empty-icon"><i class="fas fa-video" aria-hidden="true"></i></div>
+                <h3>Waiting for video</h3>
+                <p>People in the call will appear here as soon as video becomes available.</p>
+              </div>
+
+              <div class="stage-local-controls invisible">
+                <div id="mutebutton" class="invisible stage-control" role="button" tabindex="0">
+                  <span><i class="fas fa-microphone-slash" aria-hidden="true"></i></span>
+                  <label>Mute</label>
+                </div>
+                <div id="camerabutton" class="invisible stage-control" role="button" tabindex="0">
+                  <span><i class="fas fa-video" aria-hidden="true"></i></span>
+                  <label>Stop camera</label>
+                </div>
+                <div id="sharebutton" class="invisible stage-control" role="button" tabindex="0">
+                  <span><i class="fas fa-desktop" aria-hidden="true"></i></span>
+                  <label>Share screen</label>
+                </div>
+              </div>
+
+              <div class="participant-strip-shell">
+                <p class="participant-strip-summary visually-hidden" id="participant-summary">Participants stay below the stage.</p>
+                <div id="peers" class="participant-strip"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="captions-container" class="invisible">
+            <div id="captions"></div>
+          </div>
+
+          <div class="login-container invisible" id="login-container">
+            <div class="login-hero">
+              <p class="login-kicker">Owly conference</p>
+              <h2>Join the room with the current group logic</h2>
+              <p>Same permissions, same group storage, redesigned interface.</p>
+            </div>
+
+            <div class="login-box">
+              <form id="loginform" class="loginform">
+                <div id="userform">
+                  <label for="username">Username</label>
+                  <input id="username" type="text" name="username"
+                         autocomplete="username" class="form-control"/>
+                </div>
+                <div id="passwordform">
+                  <label for="password">Password</label>
+                  <input id="password" type="password" name="password"
+                         autocomplete="current-password" class="form-control"/>
+                </div>
+                <div class="clear"></div>
+                <div class="connect">
+                  <input id="connectbutton" type="submit" class="btn btn-blue" value="Connect"/>
+                </div>
+              </form>
+
+              <div id="login-device-selection" class="device-selection hidden">
+                <div id="camera-device-card" class="device-card hidden">
+                  <div class="device-card-header">
+                    <span class="device-icon"><i class="fas fa-video" aria-hidden="true"></i></span>
+                    <span class="device-card-label">Camera</span>
+                    <span class="permission-icon"></span>
+                  </div>
+                </div>
+
+                <div id="microphone-device-card" class="device-card hidden">
+                  <div class="device-card-header">
+                    <span class="device-icon"><i class="fas fa-microphone" aria-hidden="true"></i></span>
+                    <span class="device-card-label">Microphone</span>
+                    <span class="permission-icon"></span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="clear"></div>
+            </div>
+
+            <div class="login-version">Owly v1.3</div>
+          </div>
+
+          <div class="no-media-message invisible" id="no-media-message">
+            <div class="no-media-card">
+              <div class="no-media-icon">
+                <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10"/>
+                  <line x1="1" y1="1" x2="23" y2="23"/>
+                </svg>
+              </div>
+              <h3>Camera or microphone unavailable</h3>
+              <p>Current media features are disabled. You can still stay in the room and use chat.</p>
+              <ul class="no-media-list">
+                <li>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                    <circle cx="12" cy="13" r="4"/>
+                  </svg>
+                  <div>
+                    <strong>No device detected</strong>
+                    <span>Connect a camera or microphone</span>
+                  </div>
+                </li>
+                <li>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                  </svg>
+                  <div>
+                    <strong>Permission denied</strong>
+                    <span>Allow access in browser settings</span>
+                  </div>
+                </li>
+                <li>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="2" y1="12" x2="22" y2="12"/>
+                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                  </svg>
+                  <div>
+                    <strong>Browser unsupported</strong>
+                    <span>Use Chrome, Firefox, Safari, or Edge</span>
+                  </div>
+                </li>
+              </ul>
+              <p class="no-media-footer">Chat and remote streams remain available.</p>
+            </div>
+          </div>
+        </div>
+
+        <aside class="chat-panel invisible" id="left">
+          <div id="chat">
+            <div id="chatbox">
+              <div class="chat-panel-head">
+                <div>
+                  <p class="chat-panel-kicker">Communication</p>
+                  <h2>Chat</h2>
+                </div>
+                <button class="close-chat" id="close-chat" type="button" title="Hide chat">
+                  <span class="close-icon"></span>
+                </button>
+              </div>
+
+              <div class="chat-users">
+                <div class="users-header">
+                  <button id="participants-toggle" class="participants-toggle" type="button" aria-expanded="false" aria-controls="users">
+                    <span class="owly-header">Participants</span>
+                    <span class="participants-meta">
+                      <span id="participants-count" class="participants-count">0</span>
+                      <span id="participants-chevron" class="participants-chevron" aria-hidden="true">
+                        <i class="fas fa-chevron-down" aria-hidden="true"></i>
+                      </span>
+                    </span>
+                  </button>
+                </div>
+                <div class="header-sep"></div>
+                <div id="users"></div>
+              </div>
+
+              <div id="box"></div>
+
+              <div class="reply">
+                <div class="composer-toolbar">
+                  <button id="emoji-toggle" class="composer-tool" type="button" title="Insert emoji">
+                    <i class="far fa-smile" aria-hidden="true"></i>
+                  </button>
+                  <div id="emoji-picker" class="emoji-picker invisible" aria-hidden="true"></div>
+                </div>
+                <form id="inputform" class="invisible">
+                  <textarea id="input" class="form-reply" rows="1" placeholder="Write a message"></textarea>
+                  <button id="inputbutton" type="submit" class="btn btn-default invisible" aria-label="Send message">
+                    <i class="fas fa-paper-plane" aria-hidden="true"></i>
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <div id="resizer" class="invisible" aria-hidden="true"></div>
+        <span class="show-video invisible" id="show-video" aria-hidden="true">
+          <i class="fas fa-exchange-alt" aria-hidden="true"></i>
+        </span>
+        <div class="chat-btn collapse-video invisible" id="collapse-video" aria-hidden="true">
+          <i class="far fa-comment-alt icon-chat" title="Hide video and show chat"></i>
+        </div>
+      </div>
+    </div>
+
+    <div id="videocontrols-template" class="invisible">
+      <div class="video-controls vc-overlay">
+        <div class="controls-button controls-left">
+          <div class="volume" title="Volume">
+            <button class="volume-trigger" type="button" aria-label="Toggle sound">
+              <i class="fas fa-volume-up volume-mute" aria-hidden="true"></i>
+            </button>
+            <div class="volume-popover" aria-hidden="true">
+              <input class="volume-slider" type="range" max="100" value="100" min="0" step="5" aria-label="Volume level">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <dialog id="invite-dialog">
+      <form method="dialog">
+        <label for="invite-username">Username (optional):</label>
+        <input id="invite-username" type="text"/>
+        <br>
+        <label for="invite-not-before">Not before:</label>
+        <input id="invite-not-before" type="datetime-local"/>
+        <br>
+        <label for="invite-expires">Expires:</label>
+        <input id="invite-expires" type="datetime-local"/>
+        <br>
+        <button id="invite-cancel" value="cancel" type="button">Cancel</button>
+        <button value="invite">Invite</button>
+      </form>
+    </dialog>
+
+    <dialog id="permission-dialog">
+      <form method="dialog" id="permission-form">
+        <h2>Permissions required</h2>
+        <p>Camera and microphone permissions are required to join this group.</p>
+        <p>Please allow access when prompted by your browser.</p>
+        <div class="permission-buttons">
+          <button id="permission-retry" type="button" class="btn btn-blue">Retry</button>
+          <button id="permission-cancel" value="cancel" type="button" class="btn btn-default">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/protocol.js?v=1.5.27"></script>
+    <script src="/third-party/toastify/toastify.js"></script>
+    <script src="/third-party/contextual/contextual.js"></script>
+    <script src="/galene.js?v=1.5.27"></script>
+  </body>
+</html>

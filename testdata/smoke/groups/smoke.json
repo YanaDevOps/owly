@@ -1,0 +1,10 @@
+{
+  "public": true,
+  "description": "Smoke room",
+  "wildcard-user": {
+    "permissions": ["present", "message"],
+    "password": {
+      "type": "wildcard"
+    }
+  }
+}

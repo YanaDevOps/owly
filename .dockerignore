@@ -1,0 +1,17 @@
+.git
+.gocache
+.gomodcache
+tmp-gocache
+tmp-gomodcache
+tmp-gopath
+tmp-npm-cache
+node_modules
+test-results
+logs
+recordings
+data
+galene
+galene.exe
+tmp-*.log
+*.log
+

@@ -1,0 +1,1483 @@
+package group
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
+	"maps"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/pion/ice/v4"
+	"github.com/pion/interceptor"
+	"github.com/pion/webrtc/v4"
+
+	"github.com/jech/galene/token"
+)
+
+var Directory, DataDirectory string
+var UseMDNS bool
+var UDPMin, UDPMax uint16
+var udpMux ice.UDPMux
+
+type NotAuthorisedError struct {
+	err error
+}
+
+func (err *NotAuthorisedError) Error() string {
+	if err.err != nil {
+		return "not authorised: " + err.err.Error()
+	}
+	return "not authorised"
+}
+func (err *NotAuthorisedError) Unwrap() error {
+	return err.err
+}
+
+var ErrBadPassword = &NotAuthorisedError{
+	err: errors.New("bad password"),
+}
+
+var ErrNoSuchUsername = &NotAuthorisedError{
+	err: errors.New("user not found"),
+}
+
+var ErrDuplicateUsername = &NotAuthorisedError{
+	err: errors.New("this username is taken"),
+}
+
+type UserError string
+
+func (err UserError) Error() string {
+	return string(err)
+}
+
+type KickError struct {
+	Id       string
+	Username *string
+	Message  string
+}
+
+func (err KickError) Error() string {
+	m := "kicked out"
+	if err.Message != "" {
+		m += " (" + err.Message + ")"
+	}
+	if err.Username != nil && *err.Username != "" {
+		m += " by " + *err.Username
+	}
+	return m
+}
+
+type ProtocolError string
+
+func (err ProtocolError) Error() string {
+	return string(err)
+}
+
+type ChatHistoryEntry struct {
+	Id     string
+	Source string
+	User   *string
+	Time   time.Time
+	Kind   string
+	Value  interface{}
+}
+
+type ChatReactions struct {
+	Counts   map[string]int `json:"counts,omitempty"`
+	Selected *string        `json:"selected,omitempty"`
+}
+
+const (
+	LowBitrate = 100 * 1024
+	MinBitrate = LowBitrate * 2
+	MaxBitrate = 1024 * 1024 * 1024
+)
+
+type Group struct {
+	name string
+
+	mu                  sync.Mutex
+	description         *Description
+	descriptionReloaded time.Time // Track last successful reload for throttling
+	locked              *string
+	clients             map[string]Client
+	history             []ChatHistoryEntry
+	chatReactions       map[string]map[string]string
+	timestamp           time.Time
+	data                map[string]interface{}
+}
+
+func (g *Group) Name() string {
+	return g.name
+}
+
+func (g *Group) Locked() (bool, string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.locked != nil {
+		return true, *g.locked
+	} else {
+		return false, ""
+	}
+}
+
+func (g *Group) SetLocked(locked bool, message string) {
+	g.mu.Lock()
+	if locked {
+		g.locked = &message
+	} else {
+		g.locked = nil
+	}
+	clients := g.getClientsUnlocked(nil)
+	g.mu.Unlock()
+
+	for _, c := range clients {
+		c.Joined(g.Name(), "change")
+	}
+}
+
+func (g *Group) Data() map[string]interface{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return maps.Clone(g.data)
+}
+
+func (g *Group) UpdateData(d map[string]interface{}) {
+	g.mu.Lock()
+	if g.data == nil {
+		g.data = make(map[string]interface{})
+	}
+	for k, v := range d {
+		if v == nil {
+			delete(g.data, k)
+		} else {
+			g.data[k] = v
+		}
+	}
+	clients := g.getClientsUnlocked(nil)
+	g.mu.Unlock()
+
+	for _, c := range clients {
+		c.Joined(g.Name(), "change")
+	}
+}
+
+func (g *Group) Description() *Description {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.description
+}
+
+func (g *Group) ClientCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.clients)
+}
+
+func (g *Group) mayExpire() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.description.Public {
+		return false
+	}
+	if len(g.clients) > 0 {
+		return false
+	}
+	return time.Since(g.timestamp) > maxHistoryAge(g.description)
+}
+
+var groups struct {
+	mu     sync.Mutex
+	groups map[string]*Group
+}
+
+func (g *Group) API() (*webrtc.API, error) {
+	g.mu.Lock()
+	codecs := g.description.Codecs
+	g.mu.Unlock()
+
+	return APIFromNames(codecs)
+}
+
+func fmtpValue(fmtp, key string) string {
+	fields := strings.Split(fmtp, ";")
+	for _, f := range fields {
+		k, v, found := strings.Cut(f, "=")
+		if found && k == key {
+			return v
+		}
+	}
+	return ""
+}
+
+func CodecPayloadType(codec webrtc.RTPCodecCapability) (webrtc.PayloadType, error) {
+	switch strings.ToLower(codec.MimeType) {
+	case "video/vp8":
+		return 96, nil
+	case "video/vp9":
+		profile := fmtpValue(codec.SDPFmtpLine, "profile-id")
+		switch profile {
+		case "", "0":
+			return 98, nil
+		case "2":
+			return 100, nil
+		default:
+			return 0, fmt.Errorf("unknown VP9 profile %v", profile)
+
+		}
+	case "video/av1":
+		return 35, nil
+	case "video/h264":
+		profile := fmtpValue(codec.SDPFmtpLine, "profile-level-id")
+		if profile == "" {
+			return 102, nil
+		}
+		if len(profile) < 4 {
+			return 0, errors.New("malforned H.264 profile")
+		}
+		switch strings.ToLower(profile[:4]) {
+		case "4200":
+			return 102, nil
+		case "42e0":
+			return 108, nil
+		default:
+			return 0, fmt.Errorf(
+				"unknown H.264 profile %v", profile,
+			)
+		}
+	case "audio/opus":
+		return 111, nil
+	case "audio/g722":
+		return 9, nil
+	case "audio/pcmu":
+		return 0, nil
+	case "audio/pcma":
+		return 8, nil
+	default:
+		return 0, fmt.Errorf("unknown codec %v", codec.MimeType)
+	}
+}
+
+// VideoRTCPFeedback are the RTCP feedback types that we expect for video
+// tracks.
+var VideoRTCPFeedback = []webrtc.RTCPFeedback{
+	{"goog-remb", ""},
+	{"nack", ""},
+	{"nack", "pli"},
+	{"ccm", "fir"},
+}
+
+// AudioRTCPFeedback is like VideoRTCPFeedback but for audio tracks.
+var AudioRTCPFeedback = []webrtc.RTCPFeedback(nil)
+
+func codecsFromName(name string) ([]webrtc.RTPCodecParameters, error) {
+	var codecs []webrtc.RTPCodecCapability
+
+	switch name {
+	case "vp8":
+		codecs = []webrtc.RTPCodecCapability{
+			{
+				"video/VP8", 90000, 0,
+				"",
+				VideoRTCPFeedback,
+			},
+		}
+	case "vp9":
+		codecs = []webrtc.RTPCodecCapability{
+			{
+				"video/VP9", 90000, 0,
+				"profile-id=0",
+				VideoRTCPFeedback,
+			},
+			{
+				"video/VP9", 90000, 0,
+				"profile-id=2",
+				VideoRTCPFeedback,
+			},
+		}
+	case "av1":
+		codecs = []webrtc.RTPCodecCapability{
+			{
+				"video/AV1", 90000, 0,
+				"",
+				VideoRTCPFeedback,
+			},
+		}
+	case "h264":
+		codecs = []webrtc.RTPCodecCapability{
+			{
+				"video/H264", 90000, 0,
+				"level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+				VideoRTCPFeedback,
+			},
+		}
+	case "opus":
+		codecs = []webrtc.RTPCodecCapability{
+			{
+				"audio/opus", 48000, 2,
+				"minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1",
+				AudioRTCPFeedback,
+			},
+		}
+	case "g722":
+		codecs = []webrtc.RTPCodecCapability{
+			{
+				"audio/G722", 8000, 1,
+				"",
+				AudioRTCPFeedback,
+			},
+		}
+	case "pcmu":
+		codecs = []webrtc.RTPCodecCapability{
+			{
+				"audio/PCMU", 8000, 1,
+				"",
+				AudioRTCPFeedback,
+			},
+		}
+	case "pcma":
+		codecs = []webrtc.RTPCodecCapability{
+			{
+				"audio/PCMA", 8000, 1,
+				"",
+				AudioRTCPFeedback,
+			},
+		}
+	default:
+		return nil, errors.New("unknown codec")
+	}
+
+	parms := make([]webrtc.RTPCodecParameters, 0, len(codecs))
+	for _, c := range codecs {
+		ptype, err := CodecPayloadType(c)
+		if err != nil {
+			log.Printf("Couldn't determine ptype for codec %v: %v",
+				c.MimeType, err)
+			continue
+		}
+		parms = append(parms, webrtc.RTPCodecParameters{
+			RTPCodecCapability: c,
+			PayloadType:        ptype,
+		})
+	}
+	return parms, nil
+}
+
+func SetUDPMux(port int) error {
+	var err error
+	udpMux, err = ice.NewMultiUDPMuxFromPort(port)
+	return err
+}
+
+func APIFromCodecs(codecs []webrtc.RTPCodecParameters) (*webrtc.API, error) {
+	s := webrtc.SettingEngine{}
+	s.SetSRTPReplayProtectionWindow(512)
+	s.DisableActiveTCP(true)
+	if !UseMDNS {
+		s.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
+	}
+
+	m := webrtc.MediaEngine{}
+
+	for _, codec := range codecs {
+		tpe := webrtc.RTPCodecTypeVideo
+		if strings.HasPrefix(strings.ToLower(codec.MimeType), "audio/") {
+			tpe = webrtc.RTPCodecTypeAudio
+		}
+		err := m.RegisterCodec(codec, tpe)
+		if err != nil {
+			log.Printf("%v", err)
+			continue
+		}
+	}
+
+	if udpMux != nil {
+		s.SetICEUDPMux(udpMux)
+	} else if UDPMin > 0 && UDPMax > 0 {
+		s.SetEphemeralUDPPortRange(UDPMin, UDPMax)
+	}
+
+	err := webrtc.ConfigureSimulcastExtensionHeaders(&m)
+	if err != nil {
+		return nil, err
+	}
+
+	ir := interceptor.Registry{}
+
+	return webrtc.NewAPI(
+		webrtc.WithSettingEngine(s),
+		webrtc.WithMediaEngine(&m),
+		webrtc.WithInterceptorRegistry(&ir),
+	), nil
+}
+
+func APIFromNames(names []string) (*webrtc.API, error) {
+	if len(names) == 0 {
+		names = []string{"vp8", "opus"}
+	}
+	var codecs []webrtc.RTPCodecParameters
+	for _, n := range names {
+		cs, err := codecsFromName(n)
+		if err != nil {
+			log.Printf("Codec %v: %v", n, err)
+			continue
+		}
+		codecs = append(codecs, cs...)
+	}
+
+	return APIFromCodecs(codecs)
+}
+
+func Add(name string, desc *Description) (*Group, error) {
+	g, notify, err := add(name, desc)
+	for _, c := range notify {
+		c.Joined(g.Name(), "change")
+	}
+	return g, err
+}
+
+func validGroupName(name string) bool {
+	if strings.ContainsRune(name, '\\') {
+		return false
+	}
+	if s := filepath.Separator; s != '/' && s != '\\' {
+		if strings.ContainsRune(name, s) {
+			return false
+		}
+	}
+
+	s := path.Clean("/" + name)
+	if s == "/" {
+		return false
+	}
+
+	return s == "/"+name
+}
+
+func add(name string, desc *Description) (*Group, []Client, error) {
+	if !validGroupName(name) {
+		return nil, nil, UserError("illegal group name")
+	}
+
+	groups.mu.Lock()
+	defer groups.mu.Unlock()
+
+	if groups.groups == nil {
+		groups.groups = make(map[string]*Group)
+	}
+
+	var err error
+
+	g := groups.groups[name]
+	if g == nil {
+		if desc == nil {
+			desc, err = readDescription(name, true)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+
+		g = &Group{
+			name:        name,
+			description: desc,
+			clients:     make(map[string]Client),
+			timestamp:   time.Now(),
+		}
+		groups.groups[name] = g
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	notify := false
+	if desc != nil {
+		if !descriptionMatch(g.description, desc) {
+			g.description = desc
+			notify = true
+		}
+	} else if !descriptionUnchanged(name, g.description) {
+		// Don't reload if we checked less than 1 minute ago (throttling)
+		if time.Since(g.descriptionReloaded) < time.Minute {
+			autoLockKick(g)
+			return g, nil, nil
+		}
+
+		log.Printf("[Group %s] Description changed, reloading from disk", name)
+		desc, err = readDescription(name, true)
+		if err != nil {
+			// Don't delete the group on transient errors - keep using old description
+			if !errors.Is(err, os.ErrNotExist) {
+				log.Printf("Warning: Failed to reload group %v description: %v (keeping existing description)", name, err)
+			} else {
+				// Group file was intentionally deleted - remove group
+				log.Printf("[Group %s] ERROR: File deleted, removing group with %d clients", name, len(g.clients))
+				deleteUnlocked(g)
+				return nil, nil, err
+			}
+		} else {
+			// Successfully reloaded
+			log.Printf("[Group %s] Successfully reloaded description", name)
+			g.description = desc
+			g.descriptionReloaded = time.Now()
+			notify = true
+		}
+	}
+
+	log.Printf("[Group %s] Calling autoLockKick (Autolock=%v, Autokick=%v, Clients=%d)",
+		name, g.description.Autolock, g.description.Autokick, len(g.clients))
+	autoLockKick(g)
+
+	var clients []Client
+	if notify {
+		clients = g.getClientsUnlocked(nil)
+	}
+	return g, clients, nil
+}
+
+func Range(f func(g *Group) bool) {
+	groups.mu.Lock()
+	defer groups.mu.Unlock()
+
+	for _, g := range groups.groups {
+		ok := f(g)
+		if !ok {
+			break
+		}
+	}
+}
+
+func GetNames() []string {
+	names := make([]string, 0)
+
+	Range(func(g *Group) bool {
+		names = append(names, g.name)
+		return true
+	})
+	return names
+}
+
+type SubGroup struct {
+	Name    string
+	Clients int
+}
+
+func GetSubGroups(parent string) []SubGroup {
+	prefix := parent + "/"
+	subgroups := make([]SubGroup, 0)
+
+	Range(func(g *Group) bool {
+		if strings.HasPrefix(g.name, prefix) {
+			g.mu.Lock()
+			count := len(g.clients)
+			g.mu.Unlock()
+			if count > 0 {
+				subgroups = append(subgroups,
+					SubGroup{g.name, count})
+			}
+		}
+		return true
+	})
+	return subgroups
+}
+
+func Get(name string) *Group {
+	groups.mu.Lock()
+	defer groups.mu.Unlock()
+	if groups.groups == nil {
+		return nil
+	}
+	return groups.groups[name]
+}
+
+func Delete(name string) bool {
+	groups.mu.Lock()
+	defer groups.mu.Unlock()
+	g := groups.groups[name]
+	if g == nil {
+		return false
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return deleteUnlocked(g)
+}
+
+// Called with both groups.mu and g.mu taken.
+func deleteUnlocked(g *Group) bool {
+	if len(g.clients) != 0 {
+		return false
+	}
+
+	delete(groups.groups, g.name)
+	return true
+}
+
+func member(v string, l []string) bool {
+	for _, w := range l {
+		if v == w {
+			return true
+		}
+	}
+	return false
+}
+
+func canReplaceClient(existing Client, replacement Client) bool {
+	if existing == nil || replacement == nil {
+		return false
+	}
+	if member("system", existing.Permissions()) ||
+		member("system", replacement.Permissions()) {
+		return false
+	}
+	return existing.Username() == replacement.Username()
+}
+
+func AddClient(group string, c Client, creds ClientCredentials) (*Group, error) {
+	username := "nil"
+	if creds.Username != nil {
+		username = *creds.Username
+	}
+	log.Printf("[AddClient] Group=%s, client=%s, username=%s", group, c.Id(), username)
+
+	g, err := Add(group, nil)
+	if err != nil {
+		log.Printf("[AddClient] Failed to add/get group %s: %v", group, err)
+		return nil, err
+	}
+
+	g.mu.Lock()
+	clients := g.getClientsUnlocked(nil)
+
+	if !member("system", c.Permissions()) {
+		username, perms, err := g.getPermission(creds)
+		if err != nil {
+			g.mu.Unlock()
+			log.Printf("[AddClient] Authentication failed for %s in group %s: %v", username, group, err)
+			return nil, err
+		}
+
+		c.SetUsername(username)
+		c.SetPermissions(perms)
+
+		if !member("op", perms) {
+			if g.locked != nil {
+				m := *g.locked
+				if m == "" {
+					m = "this group is locked"
+				}
+				g.mu.Unlock()
+				return nil, UserError(m)
+			}
+			if g.description.NotBefore != nil ||
+				g.description.Expires != nil {
+				now := time.Now()
+				if g.description.NotBefore != nil &&
+					g.description.NotBefore.After(now) {
+					g.mu.Unlock()
+					return nil, UserError(
+						"this group is not open yet",
+					)
+				}
+				if g.description.Expires != nil &&
+					g.description.Expires.Before(now) {
+					g.mu.Unlock()
+					return nil, UserError(
+						"this group is closed",
+					)
+				}
+			}
+			if g.description.Autokick {
+				ops := false
+				for _, c := range clients {
+					if member("op", c.Permissions()) {
+						ops = true
+						break
+					}
+				}
+				if !ops {
+					g.mu.Unlock()
+					return nil, UserError(
+						"there are no operators " +
+							"in this group",
+					)
+				}
+			}
+		}
+	}
+	id := c.Id()
+	if id == "" {
+		g.mu.Unlock()
+		return nil, errors.New("client has empty id")
+	}
+	existing := g.clients[id]
+	if existing != nil && !canReplaceClient(existing, c) {
+		g.mu.Unlock()
+		return nil, ProtocolError("duplicate client id")
+	}
+
+	if !member("system", c.Permissions()) &&
+		!member("op", c.Permissions()) &&
+		g.description.MaxClients > 0 &&
+		existing == nil {
+		if len(g.clients) >= g.description.MaxClients {
+			g.mu.Unlock()
+			return nil, UserError("too many users")
+		}
+	}
+
+	g.clients[id] = c
+	g.timestamp = time.Now()
+	others := g.getClientsUnlocked(c)
+	g.mu.Unlock()
+
+	c.Joined(g.Name(), "join")
+
+	u := c.Username()
+	p := c.Permissions()
+	s := c.Data()
+	c.PushClient(g.Name(), "add", c.Id(), u, p, s)
+	kind := "add"
+	if existing != nil {
+		kind = "change"
+	}
+	for _, cc := range others {
+		pp := cc.Permissions()
+		uu := cc.Username()
+		c.PushClient(g.Name(), "add", cc.Id(), uu, pp, cc.Data())
+		cc.PushClient(g.Name(), kind, id, u, p, s)
+	}
+
+	if existing != nil {
+		log.Printf("[AddClient] Replacing stale client session group=%s client=%s username=%s", group, id, u)
+		if err := existing.Close(); err != nil {
+			log.Printf("[AddClient] Failed to close replaced client group=%s client=%s: %v", group, id, err)
+		}
+	}
+
+	return g, nil
+}
+
+// called locked
+func autoLockKick(g *Group) {
+	if !(g.description.Autolock && g.locked == nil) &&
+		!g.description.Autokick {
+		return
+	}
+
+	clients := g.getClientsUnlocked(nil)
+	log.Printf("[Group %s] autoLockKick: checking %d clients for operators", g.name, len(clients))
+
+	for _, c := range clients {
+		if member("op", c.Permissions()) {
+			log.Printf("[Group %s] autoLockKick: operator found, aborting", g.name)
+			return
+		}
+	}
+
+	log.Printf("[Group %s] autoLockKick: NO operators found (Autolock=%v, Autokick=%v)",
+		g.name, g.description.Autolock, g.description.Autokick)
+
+	if g.description.Autolock && g.locked == nil {
+		log.Printf("[Group %s] autoLockKick: LOCKING group", g.name)
+		m := "this group is locked"
+		g.locked = &m
+		for _, c := range clients {
+			c.Joined(g.Name(), "change")
+		}
+	}
+
+	if g.description.Autokick {
+		log.Printf("[Group %s] autoLockKick: KICKING all %d clients", g.name, len(clients))
+		// we cannot call kickall, since it requires the group to
+		// be unlocked.  And calling it asynchronously might
+		// spuriously kick out an operator.
+		go func(clients []Client) {
+			for _, c := range clients {
+				c.Kick(
+					"", nil,
+					"there are no operators in this group",
+				)
+			}
+		}(g.getClientsUnlocked(nil))
+	}
+}
+
+func DelClient(c Client) {
+	g := c.Group()
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	if g.clients[c.Id()] != c {
+		g.mu.Unlock()
+		return
+	}
+	delete(g.clients, c.Id())
+	g.timestamp = time.Now()
+	clients := g.getClientsUnlocked(nil)
+	g.mu.Unlock()
+
+	c.Joined(g.Name(), "leave")
+	for _, cc := range clients {
+		cc.PushClient(
+			g.Name(), "delete", c.Id(), c.Username(), nil, nil,
+		)
+	}
+
+	// autoLockKick expects g.mu to be held.
+	g.mu.Lock()
+	autoLockKick(g)
+	g.mu.Unlock()
+}
+
+func (g *Group) GetClients(except Client) []Client {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.getClientsUnlocked(except)
+}
+
+func (g *Group) getClientsUnlocked(except Client) []Client {
+	clients := make([]Client, 0, len(g.clients))
+	for _, c := range g.clients {
+		if c != except {
+			clients = append(clients, c)
+		}
+	}
+	return clients
+}
+
+func (g *Group) GetClient(id string) Client {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.getClientUnlocked(id)
+}
+
+func (g *Group) getClientUnlocked(id string) Client {
+	for idd, c := range g.clients {
+		if idd == id {
+			return c
+		}
+	}
+	return nil
+}
+
+func (g *Group) Range(f func(c Client) bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, c := range g.clients {
+		ok := f(c)
+		if !ok {
+			break
+		}
+	}
+}
+
+func kickall(g *Group, message string) {
+	g.Range(func(c Client) bool {
+		c.Kick("", nil, message)
+		return true
+	})
+}
+
+func Shutdown(message string) {
+	Range(func(g *Group) bool {
+		g.SetLocked(true, message)
+		kickall(g, message)
+		return true
+	})
+}
+
+type warner interface {
+	Warn(oponly bool, message string) error
+}
+
+func (g *Group) WallOps(message string) {
+	clients := g.GetClients(nil)
+	for _, c := range clients {
+		w, ok := c.(warner)
+		if !ok {
+			continue
+		}
+		err := w.Warn(true, message)
+		if err != nil {
+			log.Printf("WallOps: %v", err)
+		}
+	}
+}
+
+const maxChatHistory = 50
+
+// deleteFunc is just like slices.DeleteFunc.
+// Remove this once we require Go 1.21.
+func deleteFunc[S ~[]E, E any](s S, f func(E) bool) S {
+	i := 0
+	for i = range s {
+		if f(s[i]) {
+			break
+		}
+	}
+	if i >= len(s) {
+		return s
+	}
+
+	for j := i + 1; j < len(s); j++ {
+		if v := s[j]; !f(v) {
+			s[i] = v
+			i++
+		}
+	}
+	var zero E
+	for j := i; j < len(s); j++ {
+		s[j] = zero
+	}
+	return s[:i]
+}
+
+func (g *Group) ClearChatHistory(id string, userId string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if id == "" && userId == "" {
+		g.history = nil
+		g.chatReactions = nil
+		return
+	}
+	removed := make(map[string]struct{})
+	g.history = deleteFunc(g.history, func(e ChatHistoryEntry) bool {
+		remove := e.Source == userId && (id == "" || e.Id == id)
+		if remove && e.Id != "" {
+			removed[e.Id] = struct{}{}
+		}
+		return remove
+	})
+	for id := range removed {
+		delete(g.chatReactions, id)
+	}
+}
+
+func (g *Group) AddToChatHistory(id, source string, user *string, time time.Time, kind string, value interface{}) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if len(g.history) >= maxChatHistory {
+		if oldest := g.history[0].Id; oldest != "" {
+			delete(g.chatReactions, oldest)
+		}
+		copy(g.history, g.history[1:])
+		g.history = g.history[:len(g.history)-1]
+	}
+	g.history = append(g.history,
+		ChatHistoryEntry{Id: id, Source: source, User: user, Time: time, Kind: kind, Value: value},
+	)
+}
+
+func discardObsoleteHistory(h []ChatHistoryEntry, duration time.Duration) ([]ChatHistoryEntry, []string) {
+	i := 0
+	removed := make([]string, 0)
+	for i < len(h) {
+		if time.Since(h[i].Time) <= duration {
+			break
+		}
+		if h[i].Id != "" {
+			removed = append(removed, h[i].Id)
+		}
+		i++
+	}
+	if i > 0 {
+		copy(h, h[i:])
+		h = h[:len(h)-i]
+	}
+	return h, removed
+}
+
+func (g *Group) GetChatHistory() []ChatHistoryEntry {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	var removed []string
+	g.history, removed = discardObsoleteHistory(
+		g.history, maxHistoryAge(g.description),
+	)
+	for _, id := range removed {
+		delete(g.chatReactions, id)
+	}
+
+	h := make([]ChatHistoryEntry, len(g.history))
+	copy(h, g.history)
+	return h
+}
+
+func (g *Group) hasChatHistoryUnlocked(messageId string) bool {
+	for _, entry := range g.history {
+		if entry.Id == messageId {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Group) HasChatHistory(messageId string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.hasChatHistoryUnlocked(messageId)
+}
+
+func (g *Group) cloneChatReactionsUnlocked(messageId, userId string) *ChatReactions {
+	reactions := g.chatReactions[messageId]
+	if len(reactions) == 0 {
+		return nil
+	}
+
+	counts := make(map[string]int)
+	for _, emoji := range reactions {
+		if emoji != "" {
+			counts[emoji]++
+		}
+	}
+
+	var selected *string
+	if emoji, ok := reactions[userId]; ok && emoji != "" {
+		choice := emoji
+		selected = &choice
+	}
+
+	if len(counts) == 0 && selected == nil {
+		return nil
+	}
+
+	if len(counts) == 0 {
+		counts = nil
+	}
+
+	return &ChatReactions{
+		Counts:   counts,
+		Selected: selected,
+	}
+}
+
+func (g *Group) GetChatReactions(messageId, userId string) *ChatReactions {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if !g.hasChatHistoryUnlocked(messageId) {
+		return nil
+	}
+
+	return g.cloneChatReactionsUnlocked(messageId, userId)
+}
+
+func (g *Group) SetChatReaction(messageId, userId string, emoji *string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if !g.hasChatHistoryUnlocked(messageId) {
+		return os.ErrNotExist
+	}
+
+	if emoji == nil || *emoji == "" {
+		if reactions := g.chatReactions[messageId]; reactions != nil {
+			delete(reactions, userId)
+			if len(reactions) == 0 {
+				delete(g.chatReactions, messageId)
+			}
+		}
+		return nil
+	}
+
+	if g.chatReactions == nil {
+		g.chatReactions = make(map[string]map[string]string)
+	}
+	if g.chatReactions[messageId] == nil {
+		g.chatReactions[messageId] = make(map[string]string)
+	}
+	g.chatReactions[messageId][userId] = *emoji
+	return nil
+}
+
+func (g *Group) DeleteChatReactions(messageId string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.chatReactions, messageId)
+}
+
+// Configuration represents the contents of the data/config.json file.
+type Configuration struct {
+	// The modtime and size of the file.  These are used to detect
+	// when a file has changed on disk.
+	modTime  time.Time `json:"-"`
+	fileSize int64     `json:"-"`
+
+	CanonicalHost    string                     `json:"canonicalHost,omitempty"`
+	AllowOrigin      []string                   `json:"allowOrigin,omitempty"`
+	AllowAdminOrigin []string                   `json:"allowAdminOrigin,omitempty"`
+	ProxyURL         string                     `json:"proxyURL,omitempty"`
+	WritableGroups   bool                       `json:"writableGroups,omitempty"`
+	Users            map[string]UserDescription `json:"users,omitempty"`
+
+	// obsolete fields
+	Admin []ClientPattern `json:"admin,omitempty"`
+}
+
+func (conf Configuration) Zero() bool {
+	return conf.modTime.Equal(time.Time{}) &&
+		conf.fileSize == 0
+}
+
+var configuration struct {
+	mu            sync.Mutex
+	configuration *Configuration
+}
+
+func GetConfiguration() (*Configuration, error) {
+	configuration.mu.Lock()
+	defer configuration.mu.Unlock()
+
+	if configuration.configuration == nil {
+		configuration.configuration = &Configuration{}
+	}
+
+	filename := filepath.Join(DataDirectory, "config.json")
+	fi, err := os.Stat(filename)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if !configuration.configuration.Zero() {
+				configuration.configuration = &Configuration{}
+			}
+			return configuration.configuration, nil
+		}
+		return nil, err
+	}
+
+	if configuration.configuration.modTime.Equal(fi.ModTime()) &&
+		configuration.configuration.fileSize == fi.Size() {
+		return configuration.configuration, nil
+	}
+
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	d := json.NewDecoder(f)
+	d.DisallowUnknownFields()
+	var conf Configuration
+	err = d.Decode(&conf)
+	if err != nil {
+		return nil, err
+	}
+	if conf.Admin != nil {
+		log.Printf("%v: field \"admin\" is obsolete, ignored", filename)
+		conf.Admin = nil
+	}
+	conf.modTime = fi.ModTime()
+	conf.fileSize = fi.Size()
+	configuration.configuration = &conf
+	return configuration.configuration, nil
+}
+
+// called locked
+func (g *Group) getPasswordPermission(creds ClientCredentials) (Permissions, error) {
+	desc := g.description
+
+	if creds.Username == nil {
+		return Permissions{}, errors.New("username not provided")
+	}
+	if desc.Users != nil {
+		if c, found := desc.Users[*creds.Username]; found {
+			ok, err := c.Password.Match(creds.Password)
+			if err != nil {
+				return Permissions{}, err
+			}
+			if ok {
+				return c.Permissions, nil
+			} else {
+				log.Printf("[Group %s] Bad password for user %s", g.name, *creds.Username)
+				return Permissions{}, ErrBadPassword
+			}
+		}
+	}
+
+	if desc.WildcardUser != nil {
+		ok, _ := desc.WildcardUser.Password.Match(creds.Password)
+		if ok {
+			return desc.WildcardUser.Permissions, nil
+		}
+	}
+
+	// Log user not found with context
+	userCount := 0
+	if desc.Users != nil {
+		userCount = len(desc.Users)
+	}
+	hasWildcard := desc.WildcardUser != nil
+	log.Printf("[Group %s] User not found: username=%s, configured_users=%d, has_wildcard=%v",
+		g.name, *creds.Username, userCount, hasWildcard)
+
+	return Permissions{}, ErrNoSuchUsername
+}
+
+// Return true if there is a user entry with the given username.
+// Always return false for an empty username.
+func (g *Group) UserExists(username string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.userExists(username)
+}
+
+// called locked
+func (g *Group) userExists(username string) bool {
+	desc := g.description
+	if desc.Users == nil {
+		return false
+	}
+	_, found := desc.Users[username]
+	return found
+}
+
+// validUsername returns true if a string is a valid username.
+// On the one hand, we want to allow usernames such as "jch@work"
+// or "Alice c/o Bob".  On the other hand, not restricting
+// usernames might lead to security vulnaribilities.
+// For now, we just do the minimal validation that avoids path traversal.
+func validUsername(username string) bool {
+	return username == "" || validGroupName(username)
+}
+
+// called locked
+func (g *Group) getPermission(creds ClientCredentials) (string, []string, error) {
+	desc := g.description
+	var username string
+	var perms []string
+	if creds.Token != "" {
+		tok, err := token.Parse(creds.Token, desc.AuthKeys)
+		if err != nil {
+			return "", nil, &NotAuthorisedError{err: err}
+		}
+
+		conf, err := GetConfiguration()
+		if err != nil {
+			return "", nil, err
+		}
+
+		username, perms, err =
+			tok.Check(conf.CanonicalHost, g.name, creds.Username)
+		if err != nil {
+			return "", nil, &NotAuthorisedError{err: err}
+		}
+		if username == "" && creds.Username != nil {
+			if g.userExists(*creds.Username) {
+				return "", nil, ErrDuplicateUsername
+			}
+			username = *creds.Username
+		}
+	} else if creds.Username != nil {
+		username = *creds.Username
+		ps, err := g.getPasswordPermission(creds)
+		if err != nil {
+			return "", nil, err
+		}
+		perms = ps.Permissions(desc)
+	} else {
+		return "", nil, errors.New("neither username nor token provided")
+	}
+
+	if !validUsername(username) {
+		return "", nil, &NotAuthorisedError{
+			errors.New("invalid username"),
+		}
+	}
+
+	return username, perms, nil
+}
+
+func (g *Group) GetPermission(creds ClientCredentials) (string, []string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.getPermission(creds)
+}
+
+type Status struct {
+	Name              string `json:"name"`
+	Redirect          string `json:"redirect,omitempty"`
+	Location          string `json:"location,omitempty"`
+	Endpoint          string `json:"endpoint,omitempty"`
+	DisplayName       string `json:"displayName,omitempty"`
+	Description       string `json:"description,omitempty"`
+	AuthServer        string `json:"authServer,omitempty"`
+	AuthPortal        string `json:"authPortal,omitempty"`
+	Locked            bool   `json:"locked,omitempty"`
+	ClientCount       *int   `json:"clientCount,omitempty"`
+	CanChangePassword bool   `json:"canChangePassword,omitempty"`
+}
+
+// Status returns a group's status.
+// Base is the base URL for groups; if omitted, then both the Location and
+// Endpoint members are omitted from the result.
+func (g *Group) Status(authentified bool, base *url.URL) Status {
+	desc := g.Description()
+
+	if desc.Redirect != "" {
+		return Status{
+			Name:        g.name,
+			Redirect:    desc.Redirect,
+			DisplayName: desc.DisplayName,
+			Description: desc.Description,
+		}
+	}
+
+	var location, endpoint string
+	if base != nil {
+		wss := "wss"
+		if base.Scheme == "http" {
+			wss = "ws"
+		}
+		l := url.URL{
+			Scheme: base.Scheme,
+			Host:   base.Host,
+			Path: path.Join(
+				path.Join(base.Path, "/group/"),
+				g.Name()) + "/",
+		}
+		location = l.String()
+		e := url.URL{
+			Scheme: wss,
+			Host:   base.Host,
+			Path:   path.Join(base.Path, "/ws"),
+		}
+		endpoint = e.String()
+	}
+
+	d := Status{
+		Name:        g.name,
+		Location:    location,
+		Endpoint:    endpoint,
+		DisplayName: desc.DisplayName,
+		AuthServer:  desc.AuthServer,
+		AuthPortal:  desc.AuthPortal,
+		Description: desc.Description,
+	}
+
+	if authentified || desc.Public {
+		// these are considered private information
+		locked, _ := g.Locked()
+		count := g.ClientCount()
+		d.Locked = locked
+		d.ClientCount = &count
+	}
+	if authentified {
+		conf, err := GetConfiguration()
+		if err == nil {
+			d.CanChangePassword = conf.WritableGroups
+		}
+	}
+	return d
+}
+
+func GetPublic(base *url.URL) []Status {
+	gs := make([]Status, 0)
+	Range(func(g *Group) bool {
+		if g.Description().Public {
+			gs = append(gs, g.Status(false, base))
+		}
+		return true
+	})
+	sort.Slice(gs, func(i, j int) bool {
+		return gs[i].Name < gs[j].Name
+	})
+	return gs
+}
+
+// Update checks that all in-memory groups are up-to-date and updates the
+// list of public groups.  It also removes from memory any non-public
+// groups that haven't been accessed in maxHistoryAge.
+func Update() {
+	_, err := GetConfiguration()
+	if err != nil {
+		log.Printf("%v: %v",
+			filepath.Join(DataDirectory, "config.json"),
+			err,
+		)
+	}
+
+	names := GetNames()
+	for _, name := range names {
+		g := Get(name)
+		if g == nil {
+			continue
+		}
+
+		deleted := false
+		if g.mayExpire() {
+			// Delete checks if the group is still empty
+			deleted = Delete(name)
+		}
+
+		// update group description
+		if !deleted {
+			Add(name, nil)
+		}
+	}
+
+	err = filepath.WalkDir(
+		Directory,
+		func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				log.Printf("Group file %v: %v", path, err)
+				return nil
+			}
+			if d.IsDir() {
+				base := filepath.Base(path)
+				if base[0] == '.' {
+					log.Printf(
+						"Ignoring group directory %v",
+						path,
+					)
+					return fs.SkipDir
+				}
+				return nil
+			}
+			filename, err := filepath.Rel(Directory, path)
+			if err != nil {
+				log.Printf("Group file %v: %v", path, err)
+				return nil
+			}
+			if !strings.HasSuffix(filename, ".json") {
+				log.Printf(
+					"Unexpected extension for group file %v",
+					path,
+				)
+				return nil
+			}
+			base := filepath.Base(filename)
+			if base[0] == '.' {
+				log.Printf("Ignoring group file %v", filename)
+				return nil
+			}
+			name := strings.TrimSuffix(filename, ".json")
+			desc, err := GetDescription(name)
+			if err != nil {
+				log.Printf("Group file %v: %v", path, err)
+				return nil
+			}
+			if desc.Public {
+				Add(name, desc)
+			}
+			return nil
+		},
+	)
+
+	if err != nil {
+		log.Printf("Couldn't read groups: %v", err)
+	}
+}
