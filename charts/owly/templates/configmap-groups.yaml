@@ -1,0 +1,18 @@
+{{- if .Values.sampleGroup.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "owly.fullname" . }}-groups
+  labels:
+    {{- include "owly.labels" . | nindent 4 }}
+data:
+  {{ .Values.sampleGroup.name }}.json: |
+    {
+      "users": {
+        "{{ .Values.sampleGroup.username }}": {
+          "password": "{{ .Values.sampleGroup.password }}",
+          "permissions": "op"
+        }
+      }
+    }
+{{- end }}

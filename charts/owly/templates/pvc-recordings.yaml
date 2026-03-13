@@ -1,0 +1,17 @@
+{{- if .Values.persistence.recordings.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "owly.fullname" . }}-recordings
+  labels:
+    {{- include "owly.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.persistence.recordings.size }}
+  {{- if .Values.persistence.recordings.storageClass }}
+  storageClassName: {{ .Values.persistence.recordings.storageClass | quote }}
+  {{- end }}
+{{- end }}

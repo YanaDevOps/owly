@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "owly.fullname" . }}
+  labels:
+    {{- include "owly.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "owly.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "owly.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: owly
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: https
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /opt/galene/data
+            - name: recordings
+              mountPath: /opt/galene/recordings
+            {{- if .Values.sampleGroup.enabled }}
+            - name: groups
+              mountPath: /opt/galene/groups
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.data.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "owly.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: recordings
+          {{- if .Values.persistence.recordings.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "owly.fullname" . }}-recordings
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.sampleGroup.enabled }}
+        - name: groups
+          configMap:
+            name: {{ include "owly.fullname" . }}-groups
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

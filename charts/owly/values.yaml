@@ -1,0 +1,57 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/yanadevops/owly
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 8443
+  targetPort: 8443
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: owly.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+env:
+  GALENE_HTTP: ":8443"
+  GALENE_INSECURE: "true"
+  GALENE_GROUPS: /opt/galene/groups
+  GALENE_RECORDINGS: /opt/galene/recordings
+  GALENE_DATA: /opt/galene/data
+  GALENE_RELAY_ONLY: ""
+  GALENE_TURN: ""
+
+persistence:
+  data:
+    enabled: true
+    size: 2Gi
+    storageClass: ""
+  recordings:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+
+sampleGroup:
+  enabled: true
+  name: public
+  username: owner
+  password: secret

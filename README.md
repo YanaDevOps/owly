@@ -106,9 +106,30 @@ npm run test:smoke
 .\build.cmd blur
 ```
 
+## Helm
+
+An example Helm chart is included in `charts/owly`.
+
+Install it with:
+
+```sh
+helm upgrade --install owly ./charts/owly \
+  --set image.repository=ghcr.io/yanadevops/owly \
+  --set image.tag=latest
+```
+
+By default the chart:
+
+- exposes Owly on port `8443`
+- creates persistent volumes for `data` and `recordings`
+- ships a sample `public` group through a ConfigMap
+
+Override `values.yaml` to plug in your own image, ingress, storage class, and group configuration.
+
 ## Project Structure
 
 - `static/` - frontend assets
+- `charts/owly/` - example Helm chart for Kubernetes deployment
 - `group/` - room and permission logic
 - `rtpconn/` - WebRTC client and stream handling
 - `webserver/` - HTTP and static delivery
