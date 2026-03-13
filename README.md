@@ -1,9 +1,26 @@
-# Owly
+<p align="center">
+  <img src="static/owly-logo.png" alt="Owly logo" width="124">
+</p>
 
-Owly is a lightweight WebRTC communication platform focused on fast room joins,
-clear video calls, adaptive mobile layouts, and practical collaboration tools.
-It is designed to stay simple to operate while still covering the workflows
-people actually use in live conversations.
+<h1 align="center">Owly</h1>
+
+<p align="center">
+  <strong>Focused WebRTC communication for clear calls, quick room joins, and modern collaboration.</strong>
+</p>
+
+<p align="center">
+  Shared screens, chat, reactions, mobile-first layouts, and a clean interface built for real conversations.
+</p>
+
+<p align="center">
+  <a href="#preview"><strong>Preview</strong></a>
+  &nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="#highlights"><strong>Highlights</strong></a>
+  &nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="#quick-start"><strong>Quick Start</strong></a>
+  &nbsp;&nbsp;&middot;&nbsp;&nbsp;
+  <a href="#development"><strong>Development</strong></a>
+</p>
 
 ## Preview
 
@@ -91,13 +108,13 @@ npm run test:smoke
 
 ## Project Structure
 
-- `static/` — frontend assets
-- `group/` — room and permission logic
-- `rtpconn/` — WebRTC client and stream handling
-- `webserver/` — HTTP and static delivery
-- `turnserver/` — TURN integration
-- `scripts/` — local validation helpers
-- `test/` — frontend and browser smoke coverage
+- `static/` - frontend assets
+- `group/` - room and permission logic
+- `rtpconn/` - WebRTC client and stream handling
+- `webserver/` - HTTP and static delivery
+- `turnserver/` - TURN integration
+- `scripts/` - local validation helpers
+- `test/` - frontend and browser smoke coverage
 
 ## Support
 
