@@ -1752,6 +1752,10 @@ Stream.prototype.updateStats = async function() {
                     stats[id][r.type] = {};
                     stats[id][r.type].timestamp = r.timestamp;
                     stats[id][r.type].bytesSent = r.bytesSent;
+                    if ('framesPerSecond' in r)
+                        stats[id][r.type].framesPerSecond = r.framesPerSecond;
+                    if ('qualityLimitationReason' in r)
+                        stats[id][r.type].qualityLimitationReason = r.qualityLimitationReason;
                     if (old[id] && old[id][r.type])
                         stats[id][r.type].rate =
                         ((r.bytesSent - old[id][r.type].bytesSent) * 1000 /

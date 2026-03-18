@@ -68,17 +68,20 @@ function buildPerfApi({
     extractFunction('isMobileLayout'),
     extractFunction('isLikelyMobileDevice'),
     extractFunction('isIOSDevice'),
+    extractFunction('isFirefox'),
     `function isOldSafari() { return ${oldSafari ? 'true' : 'false'}; }`,
     extractFunction('getHardwareConcurrency'),
     extractFunction('getDeviceMemory'),
     extractFunction('getPerformanceProfile'),
     extractFunction('shouldUseReducedChromeEffects'),
+    extractFunction('getDefaultSendSetting'),
+    extractFunction('getDefaultSimulcastSetting'),
     extractFunction('getAdaptiveMaxFrameRate'),
     extractFunction('getActivityDetectionInterval'),
     extractFunction('getActivityDetectionPeriod'),
     extractFunction('buildVideoConstraints'),
     extractFunction('shouldCollectUpstreamStats'),
-    'this.__exports = { getPerformanceProfile, shouldUseReducedChromeEffects, getAdaptiveMaxFrameRate, getActivityDetectionInterval, getActivityDetectionPeriod, buildVideoConstraints, shouldCollectUpstreamStats };',
+    'this.__exports = { getPerformanceProfile, shouldUseReducedChromeEffects, getDefaultSendSetting, getDefaultSimulcastSetting, getAdaptiveMaxFrameRate, getActivityDetectionInterval, getActivityDetectionPeriod, buildVideoConstraints, shouldCollectUpstreamStats };',
   ].join('\n\n');
 
   vm.runInContext(snippet, context);
@@ -164,15 +167,30 @@ function buildConnectionHealthApi({ now = 1000 } = {}) {
   return context.__exports;
 }
 
+function buildReconnectPolicyApi() {
+  const context = vm.createContext({});
+
+  const snippet = [
+    extractFunction('getReconnectDelay'),
+    extractFunction('isAuthorisationFailure'),
+    'this.__exports = { getReconnectDelay, isAuthorisationFailure };',
+  ].join('\n\n');
+
+  vm.runInContext(snippet, context);
+  return context.__exports;
+}
+
 test('desktop profile keeps performance profile as desktop and disables adaptive cap', () => {
   const api = buildPerfApi();
 
   assert.equal(api.getPerformanceProfile(), 'desktop');
   assert.equal(api.shouldUseReducedChromeEffects(), false);
-  assert.equal(api.getAdaptiveMaxFrameRate(), 0);
+  assert.equal(api.getDefaultSendSetting(), 'unlimited');
+  assert.equal(api.getDefaultSimulcastSetting(), 'on');
+  assert.equal(api.getAdaptiveMaxFrameRate(), 30);
   assert.equal(api.getActivityDetectionInterval(), 500);
   assert.equal(api.getActivityDetectionPeriod(), 1200);
-  assert.equal(api.shouldCollectUpstreamStats(), false);
+  assert.equal(api.shouldCollectUpstreamStats(), true);
 });
 
 test('modern mobile profile applies balanced mobile caps', () => {
@@ -187,10 +205,11 @@ test('modern mobile profile applies balanced mobile caps', () => {
 
   assert.equal(api.getPerformanceProfile(), 'mobile');
   assert.equal(api.shouldUseReducedChromeEffects(), true);
-  assert.equal(api.getAdaptiveMaxFrameRate(), 0);
+  assert.equal(api.getDefaultSimulcastSetting(), 'auto');
+  assert.equal(api.getAdaptiveMaxFrameRate(), 24);
   assert.equal(api.getActivityDetectionInterval(), 1000);
   assert.equal(api.getActivityDetectionPeriod(), 1800);
-  assert.equal(constraints.frameRate, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(constraints.frameRate)), { ideal: 24, max: 24 });
   assert.equal(constraints.width, undefined);
   assert.equal(constraints.height, undefined);
   assert.deepEqual(JSON.parse(JSON.stringify(constraints.aspectRatio)), { ideal: 4 / 3 });
@@ -213,12 +232,23 @@ test('low power mobile profile applies stricter caps', () => {
 
   assert.equal(api.getPerformanceProfile(), 'low-power-mobile');
   assert.equal(api.shouldUseReducedChromeEffects(), true);
-  assert.equal(api.getAdaptiveMaxFrameRate(), 0);
+  assert.equal(api.getDefaultSimulcastSetting(), 'auto');
+  assert.equal(api.getAdaptiveMaxFrameRate(), 15);
   assert.equal(api.getActivityDetectionInterval(), 1500);
   assert.equal(api.getActivityDetectionPeriod(), 2200);
-  assert.equal(constraints.frameRate, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(constraints.frameRate)), { ideal: 15, max: 15 });
   assert.deepEqual(JSON.parse(JSON.stringify(constraints.width)), { ideal: 1920 });
   assert.deepEqual(JSON.parse(JSON.stringify(constraints.height)), { ideal: 1080 });
+});
+
+test('firefox keeps simulcast default disabled', () => {
+  const api = buildPerfApi({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
+    hardwareConcurrency: 8,
+    deviceMemory: 8,
+  });
+
+  assert.equal(api.getDefaultSimulcastSetting(), 'off');
 });
 
 test('old settings are normalised immediately when read', () => {
@@ -323,4 +353,23 @@ test('failed ICE state marks stream as poor immediately', () => {
   };
 
   assert.equal(api.getStreamConnectionHealth(stream), 'poor');
+});
+
+test('reconnect delays start immediately and then cap quickly', () => {
+  const api = buildReconnectPolicyApi();
+
+  assert.equal(api.getReconnectDelay(0), 0);
+  assert.equal(api.getReconnectDelay(1), 1000);
+  assert.equal(api.getReconnectDelay(2), 2000);
+  assert.equal(api.getReconnectDelay(3), 5000);
+  assert.equal(api.getReconnectDelay(8), 5000);
+});
+
+test('authorisation failures are detected from client and server messages', () => {
+  const api = buildReconnectPolicyApi();
+
+  assert.equal(api.isAuthorisationFailure('not authorised'), true);
+  assert.equal(api.isAuthorisationFailure({ message: 'The server said: not authorized' }), true);
+  assert.equal(api.isAuthorisationFailure({ serverError: 'not-authorised' }), true);
+  assert.equal(api.isAuthorisationFailure({ message: 'duplicate username' }), false);
 });

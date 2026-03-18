@@ -89,11 +89,7 @@ let reconnectState = null;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 const reconnectMaxAttempts = 10;
-const reconnectBaseDelay = 1000;
-const reconnectCooldownMs = 10000;
 let reconnectPending = false;
-let reconnectCooldownUntil = 0;
-let reconnectCooldownTimer = null;
 let serverConnectPromise = null;
 let overlayPanelOrder = 30;
 let activeToolPanel = 'media';
@@ -215,49 +211,95 @@ function debugLog(...args) {
     console.log(...args);
 }
 
-function clearReconnectCooldownTimer() {
-    if (!reconnectCooldownTimer)
+function clearReconnectTimer() {
+    if (!reconnectTimer)
         return;
-    clearInterval(reconnectCooldownTimer);
-    reconnectCooldownTimer = null;
-}
-
-function isReconnectCooldownActive() {
-    return reconnectCooldownUntil > Date.now();
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
 }
 
 function updateReconnectCooldownUi() {
     const button = document.getElementById('connectbutton');
     if (!(button instanceof HTMLInputElement))
         return;
-
-    if (!isReconnectCooldownActive()) {
-        reconnectCooldownUntil = 0;
-        clearReconnectCooldownTimer();
-        button.disabled = false;
-        button.value = 'Connect';
-        return;
-    }
-
-    const remainingMs = Math.max(0, reconnectCooldownUntil - Date.now());
-    const remainingSeconds = Math.max(1, Math.ceil(remainingMs / 1000));
-    button.disabled = true;
-    button.value = `Try again in ${remainingSeconds}s`;
-}
-
-function startReconnectCooldown(duration = reconnectCooldownMs) {
-    reconnectCooldownUntil = Math.max(reconnectCooldownUntil, Date.now() + duration);
-    updateReconnectCooldownUi();
-    if (reconnectCooldownTimer)
-        return;
-    reconnectCooldownTimer = window.setInterval(() => {
-        updateReconnectCooldownUi();
-    }, 250);
+    button.disabled = false;
+    button.value = 'Connect';
 }
 
 function clearReconnectCooldown() {
-    reconnectCooldownUntil = 0;
     updateReconnectCooldownUi();
+}
+
+function cancelPendingReconnect(resetAttempts = false) {
+    clearReconnectTimer();
+    reconnectPending = false;
+    if (resetAttempts)
+        reconnectAttempts = 0;
+}
+
+function getReconnectDelay(attempt) {
+    if (attempt <= 0)
+        return 0;
+    if (attempt === 1)
+        return 1000;
+    if (attempt === 2)
+        return 2000;
+    return 5000;
+}
+
+function cloneJoinCredentials(credentials) {
+    if (!credentials || typeof credentials !== 'object')
+        return credentials;
+    if (Array.isArray(credentials))
+        return credentials.map(cloneJoinCredentials);
+    const clone = {};
+    for (const key in credentials)
+        clone[key] = cloneJoinCredentials(credentials[key]);
+    return clone;
+}
+
+function isAuthorisationFailure(error, message = '') {
+    const values = [message];
+    if (typeof error === 'string') {
+        values.push(error);
+    } else if (error && typeof error === 'object') {
+        if (typeof error.message === 'string')
+            values.push(error.message);
+        if (typeof error.serverError === 'string')
+            values.push(error.serverError);
+    }
+    return values.some(value => {
+        const text = (value || '').toLowerCase();
+        return text.includes('not authorised') ||
+            text.includes('not authorized') ||
+            text.includes('bad password') ||
+            text.includes('not-authorised') ||
+            text.includes('not-authorized');
+    });
+}
+
+function canReuseReconnectState(username) {
+    if (!reconnectState || !('credentials' in reconnectState))
+        return false;
+    if (!username || !reconnectState.username)
+        return true;
+    return username === reconnectState.username;
+}
+
+function getReconnectCredentials(username) {
+    if (!canReuseReconnectState(username))
+        return null;
+    return {
+        username: username || reconnectState.username || '',
+        credentials: cloneJoinCredentials(reconnectState.credentials),
+    };
+}
+
+function clearReconnectAuthState() {
+    reconnectPending = false;
+    reconnectState = null;
+    loginPassword = null;
+    setVisibility('sharelink-section', false);
 }
 
 /**
@@ -539,24 +581,32 @@ function reflectSettings() {
         }
     }
 
-    if (settings.hasOwnProperty('request')) {
-        getSelectElement('requestselect').value = settings.request;
+    const requestselect = getSelectElement('requestselect');
+    if (settings.hasOwnProperty('request') &&
+        selectOptionAvailable(requestselect, settings.request)) {
+        requestselect.value = settings.request;
     } else {
-        settings.request = getSelectElement('requestselect').value;
+        settings.request = requestselect.value;
         store = true;
     }
 
-    if (settings.hasOwnProperty('send')) {
-        getSelectElement('sendselect').value = settings.send;
+    const sendselect = getSelectElement('sendselect');
+    if (settings.hasOwnProperty('send') &&
+        selectOptionAvailable(sendselect, settings.send)) {
+        sendselect.value = settings.send;
     } else {
-        settings.send = getSelectElement('sendselect').value;
+        settings.send = getDefaultSendSetting();
+        sendselect.value = settings.send;
         store = true;
     }
 
-    if (settings.hasOwnProperty('simulcast')) {
-        getSelectElement('simulcastselect').value = settings.simulcast;
+    const simulcastselect = getSelectElement('simulcastselect');
+    if (settings.hasOwnProperty('simulcast') &&
+        selectOptionAvailable(simulcastselect, settings.simulcast)) {
+        simulcastselect.value = settings.simulcast;
     } else {
-        settings.simulcast = getSelectElement('simulcastselect').value;
+        settings.simulcast = getDefaultSimulcastSetting();
+        simulcastselect.value = settings.simulcast;
         store = true;
     }
 
@@ -672,6 +722,16 @@ function shouldRelayoutForPanelToggle() {
     return !isMobileBurgerLayout();
 }
 
+function getDefaultSendSetting() {
+    return 'unlimited';
+}
+
+function getDefaultSimulcastSetting() {
+    if (isFirefox())
+        return 'off';
+    return getPerformanceProfile() === 'desktop' ? 'on' : 'auto';
+}
+
 function applyPerformanceProfileChrome() {
     const root = document.documentElement;
     const profile = getPerformanceProfile();
@@ -680,7 +740,14 @@ function applyPerformanceProfileChrome() {
 }
 
 function getAdaptiveMaxFrameRate() {
-    return 0;
+    switch (getPerformanceProfile()) {
+    case 'mobile':
+        return 24;
+    case 'low-power-mobile':
+        return 15;
+    default:
+        return 30;
+    }
 }
 
 function getActivityDetectionInterval() {
@@ -717,7 +784,7 @@ function shouldRunActivityDetection() {
 }
 
 function shouldCollectUpstreamStats() {
-    return false;
+    return true;
 }
 
 function getFilterFrameRate(baseFrameRate) {
@@ -3620,6 +3687,7 @@ function setConnected(connected) {
         clearParticipantPresence();
         userbox.classList.add('invisible');
         connectionbox.classList.remove('invisible');
+        setVisibility('sharelink-section', false);
         setChatOpen(false);
         clearConferenceUi();
         hideVideo(true);
@@ -3644,7 +3712,11 @@ async function gotConnected() {
             presentRequested = 'both';
             updateSettings({cameraOff: false});
             setLocalCameraOff(false, false);
-            await serverConnection.join(group, state.username, state.credentials);
+            await serverConnection.join(
+                group,
+                state.username,
+                cloneJoinCredentials(state.credentials),
+            );
             return;
         }
         reconnectPending = false;
@@ -3652,9 +3724,8 @@ async function gotConnected() {
     } catch (e) {
         console.error('gotConnected/join failed:', e);
         displayError(e);
-        startReconnectCooldown();
         if (serverConnection)
-            serverConnection.close();
+            serverConnection.close('join failed after connect', true);
     }
 }
 
@@ -3683,8 +3754,6 @@ function setChangePassword(username) {
  */
 async function join() {
     let username = getInputElement('username').value.trim();
-    if (username)
-        setStoredUsername(username);
     let credentials;
     if (token) {
         pwAuth = false;
@@ -3718,17 +3787,20 @@ async function join() {
             probingState = null;
         }
         const pw = getInputElement('password').value;
+        const cachedReconnect = pw ? null : getReconnectCredentials(username);
         getInputElement('password').value = '';
-        // Only store password if it's non-empty
-        if (pw) {
-            loginPassword = pw;
-        } else {
-            loginPassword = null;
-        }
-        if (!groupStatus.authServer) {
-            pwAuth = true;
-            credentials = pw;
-        } else {
+        if (cachedReconnect) {
+            username = cachedReconnect.username;
+            credentials = cachedReconnect.credentials;
+            pwAuth = typeof credentials === 'string';
+            if (typeof credentials === 'string')
+                loginPassword = credentials;
+            console.log('[Connection] Reusing in-memory reconnect credentials', {
+                username: username,
+                authType: pwAuth ? 'password' :
+                    (credentials && credentials.type) || 'unknown',
+            });
+        } else if (groupStatus.authServer) {
             pwAuth = false;
             credentials = {
                 type: 'authServer',
@@ -3736,11 +3808,22 @@ async function join() {
                 location: location.href,
                 password: pw,
             };
+            loginPassword = null;
+        } else {
+            pwAuth = true;
+            credentials = pw;
+            loginPassword = pw || null;
         }
     }
 
+    if (username)
+        setStoredUsername(username);
+
     try {
-        reconnectState = {username, credentials};
+        reconnectState = {
+            username,
+            credentials: cloneJoinCredentials(credentials),
+        };
         await serverConnection.join(group, username, credentials, {
             muted: !!getSettings().localMute,
         });
@@ -3751,9 +3834,14 @@ async function join() {
             e.message = `Login failed for user '${username}': ${e.message}`;
         }
         displayError(e);
-        startReconnectCooldown();
-        reconnectState = null;
-        serverConnection.close();
+        reconnectPending = false;
+        if (isAuthorisationFailure(e))
+            clearReconnectAuthState();
+        closeConnectionIfOpen(
+            serverConnection,
+            'join failed',
+            !isAuthorisationFailure(e),
+        );
     }
 }
 
@@ -3784,10 +3872,7 @@ function gotClose(code, reason) {
     closeSafariStream();
     setConnected(false);
 
-    if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-    }
+    clearReconnectTimer();
 
     // Log all disconnect reasons
     const closeMeta = {
@@ -3813,27 +3898,30 @@ function gotClose(code, reason) {
     if (code !== 1000 && !willReconnect) {
         console.warn('Socket close', code, reason);
         displayError(`Connection closed: ${reason || 'Unknown reason'} (code ${code})`);
-        if (!this.closeRequestedByClient)
-            startReconnectCooldown();
     }
 
     // Attempt reconnection on unexpected disconnects
     if (willReconnect) {
-        let delay = reconnectBaseDelay * Math.pow(2, reconnectAttempts);
-        delay = Math.min(delay, 30000);
-        reconnectAttempts++;
+        const attempt = reconnectAttempts + 1;
+        const delay = getReconnectDelay(reconnectAttempts);
+        reconnectAttempts = attempt;
         console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${reconnectMaxAttempts})...`);
-        displayWarning(`Connection lost. Reconnecting (${reconnectAttempts}/${reconnectMaxAttempts})...`);
+        displayWarning(
+            delay > 0 ?
+                `Connection lost. Reconnecting in ${Math.round(delay / 1000)}s (${reconnectAttempts}/${reconnectMaxAttempts})...` :
+                `Connection lost. Reconnecting now (${reconnectAttempts}/${reconnectMaxAttempts})...`,
+        );
         reconnectTimer = setTimeout(async () => {
             reconnectTimer = null;
             try {
                 reconnectPending = true;
-                await serverConnect();
+                await serverConnect('auto');
             } catch (e) {
                 console.error('Reconnect failed:', e);
                 reconnectPending = false;
                 // If reconnect fails due to auth error, show user-friendly message
-                if (e && e.message && e.message.includes('not authorised')) {
+                if (isAuthorisationFailure(e)) {
+                    clearReconnectAuthState();
                     displayError('Reconnection failed: Not authorized. You may need to rejoin the room.');
                     reconnectAttempts = reconnectMaxAttempts; // Stop trying
                 } else {
@@ -3849,8 +3937,10 @@ function gotClose(code, reason) {
     closeUpMedia();
 
     reconnectPending = false;
-    reconnectState = null;
-    reconnectAttempts = 0;
+    if (this.closeRequestedByClient) {
+        clearReconnectAuthState();
+        reconnectAttempts = 0;
+    }
 
     const form = document.getElementById('loginform');
     if (!(form instanceof HTMLFormElement))
@@ -4490,12 +4580,12 @@ function getMaxVideoThroughput() {
     case 'low':
         return 300000;
     case 'normal':
-        return 700000;
+        return 1500000;
     case 'unlimited':
         return null;
     default:
         console.error('Unknown video quality', v);
-        return 700000;
+        return 1500000;
     }
 }
 
@@ -4808,17 +4898,54 @@ getInputElement('displayallbox').onchange = function(_e) {
  * @this {Stream}
  * @param {Object<string,any>} stats
  */
-function gotUpStats(stats) {
-    const c = this;
-
-    const values = [];
+function analyseUpstreamStats(stats) {
+    const summary = {
+        bitrate: 0,
+        cpuLimited: false,
+        lowFrameRate: false,
+    };
 
     for (const id in stats) {
-        if (stats[id] && stats[id]['outbound-rtp']) {
-            const rate = stats[id]['outbound-rtp'].rate;
-            if (typeof rate === 'number') {
-                values.push(rate);
+        const outbound = stats[id] && stats[id]['outbound-rtp'];
+        if (!outbound)
+            continue;
+        if (typeof outbound.rate === 'number')
+            summary.bitrate = Math.max(summary.bitrate, outbound.rate);
+        if (outbound.qualityLimitationReason === 'cpu')
+            summary.cpuLimited = true;
+        if (typeof outbound.framesPerSecond === 'number' &&
+            outbound.framesPerSecond > 0 &&
+            outbound.framesPerSecond < 12) {
+            summary.lowFrameRate = true;
+        }
+    }
+
+    return summary;
+}
+
+function gotUpStats(stats) {
+    const c = this;
+    const summary = analyseUpstreamStats(stats);
+    const filter = c.userdata && c.userdata.filter;
+
+    if (filter instanceof Filter) {
+        if (summary.cpuLimited || summary.lowFrameRate) {
+            filter.userdata.statsPressureCount =
+                (filter.userdata.statsPressureCount || 0) + 1;
+            if (filter.userdata.statsPressureCount >= 2) {
+                console.warn('[FilterPerformance] Disabling active effect', {
+                    localId: c.localId,
+                    filter: filter.definition && filter.definition.description,
+                    bitrate: summary.bitrate,
+                    cpuLimited: summary.cpuLimited,
+                    lowFrameRate: summary.lowFrameRate,
+                });
+                fallbackFilterForPerformance(filter).catch(e => {
+                    console.error('[FilterPerformance] Failed to disable filter:', e);
+                });
             }
+        } else {
+            filter.userdata.statsPressureCount = 0;
         }
     }
 
@@ -7795,13 +7922,14 @@ async function closeSafariStream() {
  *
  * @param {ServerConnection} connection
  * @param {string} reason
+ * @param {boolean} [internalError]
  */
-function closeConnectionIfOpen(connection, reason) {
+function closeConnectionIfOpen(connection, reason, internalError) {
     if (!connection || !connection.socket)
         return;
     const state = connection.socket.readyState;
     if (state === WebSocket.CONNECTING || state === WebSocket.OPEN)
-        connection.close(reason);
+        connection.close(reason, internalError);
 }
 
 /**
@@ -7823,8 +7951,8 @@ async function gotJoined(kind, group, perms, status, data, error, message) {
     switch (kind) {
     case 'fail':
         reconnectPending = false;
-        reconnectState = null;
-        startReconnectCooldown();
+        if (isAuthorisationFailure(error, message))
+            clearReconnectAuthState();
         if (probingState === 'probing' && error === 'need-username') {
             probingState = 'need-username';
             setVisibility('passwordform', false);
@@ -7838,18 +7966,22 @@ async function gotJoined(kind, group, perms, status, data, error, message) {
             displayError(err);
         }
         closeSafariStream();
-        closeConnectionIfOpen(this, 'join failed');
+        closeConnectionIfOpen(
+            this,
+            'join failed',
+            !isAuthorisationFailure(error, message),
+        );
         setButtonsVisibility();
         return;
     case 'redirect':
-        reconnectPending = false;
+        clearReconnectAuthState();
         closeSafariStream();
         closeConnectionIfOpen(this, 'join redirect');
         token = null;
         document.location.href = message;
         return;
     case 'leave':
-        reconnectPending = false;
+        clearReconnectAuthState();
         closeSafariStream();
         closeConnectionIfOpen(this, 'join leave');
         setButtonsVisibility();
@@ -7869,6 +8001,8 @@ async function gotJoined(kind, group, perms, status, data, error, message) {
             token = null;
         }
         reconnectAttempts = 0;
+        if (reconnectState)
+            reconnectState.username = serverConnection.username || reconnectState.username || '';
         if (typeof rememberPersistentClientUsername === 'function')
             rememberPersistentClientUsername(serverConnection.username || null);
         // don't discard endPoint and friends
@@ -9824,29 +9958,20 @@ document.getElementById('loginform').onsubmit = async function(e) {
     presentRequested = 'both';
     updateSettings({cameraOff: false});
     setLocalCameraOff(false, false);
-    reconnectPending = false;
-
-    if (isReconnectCooldownActive()) {
-        updateReconnectCooldownUi();
-        displayWarning('Please wait a few seconds before reconnecting.');
-        return;
-    }
+    cancelPendingReconnect(true);
 
     if (typeof ensurePersistentClientIdForUsername === 'function')
         ensurePersistentClientIdForUsername(getInputElement('username').value);
 
     // Connect directly and request camera/microphone during join.
-    serverConnect();
+    serverConnect('manual');
 };
 
 document.getElementById('disconnectbutton').onclick = function(_e) {
-    reconnectPending = false;
-    reconnectState = null;
-    if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-    }
-    serverConnection.close();
+    cancelPendingReconnect(true);
+    clearReconnectAuthState();
+    if (serverConnection)
+        serverConnection.close('User disconnected');
     closeNav();
 };
 
@@ -10040,7 +10165,7 @@ updateParticipantsHeader();
 updateStageBadge();
 updateReconnectCooldownUi();
 
-async function serverConnect() {
+async function serverConnect(trigger = 'manual') {
     if (serverConnectPromise)
         return serverConnectPromise;
 
@@ -10089,6 +10214,17 @@ async function serverConnect() {
             console.warn("no endpoint in status");
             url = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}/ws`;
         }
+
+        console.log('[Connection] Opening WebSocket', {
+            trigger: trigger,
+            url: url,
+            reconnectAttempts: reconnectAttempts,
+            reconnectPending: reconnectPending,
+            hasReconnectState: !!reconnectState,
+            filter: getSettings().filter || '',
+            send: getSettings().send,
+            simulcast: getSettings().simulcast,
+        });
 
         try {
             await connection.connect(url);
@@ -10147,10 +10283,6 @@ async function start() {
         passwordFromUrl = decodePasswordFromUrl(encodedPassword, potentialGroupName);
     }
 
-    // Disable simulcast on Firefox by default, it's buggy.
-    if (isFirefox())
-        getSelectElement('simulcastselect').value = 'off';
-
     const parms = new URLSearchParams(window.location.search);
     if (window.location.search)
         window.history.replaceState(null, '', window.location.pathname);
@@ -10166,7 +10298,7 @@ async function start() {
         token = parms.get('token');
 
     if (token) {
-        await serverConnect();
+        await serverConnect('initial');
     } else if (groupStatus.authPortal) {
         window.location.href = groupStatus.authPortal;
     } else {
