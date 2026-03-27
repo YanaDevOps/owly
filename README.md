@@ -45,7 +45,7 @@ git clone <your-repository-url>
 cd owly
 CGO_ENABLED=0 go build -ldflags='-s -w'
 mkdir groups
-echo '{"users":{"owner":{"password":"secret","permissions":"op"}}}' > groups/public.json
+echo '{"users":{"owner":{"password":"change-me","permissions":"op"}}}' > groups/public.json
 ./owly
 ```
 
@@ -58,7 +58,7 @@ https://localhost:8443/group/public/
 Then sign in with:
 
 - username: `owner`
-- password: `secret`
+- password: `change-me`
 
 ## What You Get
 
