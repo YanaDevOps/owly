@@ -13,16 +13,16 @@ FROM alpine:3.23
 
 RUN apk add --no-cache ca-certificates
 
-WORKDIR /opt/galene
-COPY --from=builder /src/galene .
+WORKDIR /opt/owly
+COPY --from=builder /src/owly .
 COPY --from=builder /src/static ./static
 COPY --from=builder /src/groups ./groups
 COPY entrypoint.sh .
 RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 
-VOLUME /opt/galene/data
-VOLUME /opt/galene/groups
-VOLUME /opt/galene/recordings
+VOLUME /opt/owly/data
+VOLUME /opt/owly/groups
+VOLUME /opt/owly/recordings
 
 EXPOSE 8443
 

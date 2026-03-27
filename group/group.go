@@ -20,7 +20,7 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/jech/galene/token"
+	"github.com/YanaDevOps/owly/token"
 )
 
 var Directory, DataDirectory string
@@ -1116,6 +1116,7 @@ type Configuration struct {
 	// when a file has changed on disk.
 	modTime  time.Time `json:"-"`
 	fileSize int64     `json:"-"`
+	fileName string    `json:"-"`
 
 	CanonicalHost    string                     `json:"canonicalHost,omitempty"`
 	AllowOrigin      []string                   `json:"allowOrigin,omitempty"`
@@ -1158,7 +1159,8 @@ func GetConfiguration() (*Configuration, error) {
 		return nil, err
 	}
 
-	if configuration.configuration.modTime.Equal(fi.ModTime()) &&
+	if configuration.configuration.fileName == filename &&
+		configuration.configuration.modTime.Equal(fi.ModTime()) &&
 		configuration.configuration.fileSize == fi.Size() {
 		return configuration.configuration, nil
 	}
@@ -1182,6 +1184,7 @@ func GetConfiguration() (*Configuration, error) {
 	}
 	conf.modTime = fi.ModTime()
 	conf.fileSize = fi.Size()
+	conf.fileName = filename
 	configuration.configuration = &conf
 	return configuration.configuration, nil
 }

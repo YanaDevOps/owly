@@ -14,16 +14,16 @@ import (
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/jech/galene/codecs"
-	"github.com/jech/galene/conn"
-	"github.com/jech/galene/estimator"
-	"github.com/jech/galene/group"
-	"github.com/jech/galene/ice"
-	"github.com/jech/galene/jitter"
-	"github.com/jech/galene/packetcache"
-	"github.com/jech/galene/packetmap"
-	"github.com/jech/galene/rtptime"
-	"github.com/jech/galene/unbounded"
+	"github.com/YanaDevOps/owly/codecs"
+	"github.com/YanaDevOps/owly/conn"
+	"github.com/YanaDevOps/owly/estimator"
+	"github.com/YanaDevOps/owly/group"
+	"github.com/YanaDevOps/owly/ice"
+	"github.com/YanaDevOps/owly/jitter"
+	"github.com/YanaDevOps/owly/packetcache"
+	"github.com/YanaDevOps/owly/packetmap"
+	"github.com/YanaDevOps/owly/rtptime"
+	"github.com/YanaDevOps/owly/unbounded"
 )
 
 type bitrate struct {

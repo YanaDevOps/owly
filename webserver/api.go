@@ -13,10 +13,26 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/jech/galene/group"
-	"github.com/jech/galene/stats"
-	"github.com/jech/galene/token"
+	"github.com/YanaDevOps/owly/group"
+	"github.com/YanaDevOps/owly/stats"
+	"github.com/YanaDevOps/owly/token"
 )
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, "HEAD, GET")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+
+	if r.Method == http.MethodHead {
+		return
+	}
+
+	sendJSON(w, r, map[string]string{"status": "ok"})
+}
 
 // checkAdmin checks whether the client authentifies as an administrator
 func checkAdmin(w http.ResponseWriter, r *http.Request) bool {
@@ -25,7 +41,7 @@ func checkAdmin(w http.ResponseWriter, r *http.Request) bool {
 		ok, _ = adminMatch(username, password)
 	}
 	if !ok {
-		failAuthentication(w, "/galene-api/")
+		failAuthentication(w, "/owly-api/")
 		return false
 	}
 	return true
@@ -71,7 +87,7 @@ func checkPasswordAdmin(w http.ResponseWriter, r *http.Request, groupname, user 
 			}
 		}
 	}
-	failAuthentication(w, "/galene-api/")
+	failAuthentication(w, "/owly-api/")
 	return false
 }
 
@@ -135,12 +151,12 @@ func apiCORS(w http.ResponseWriter, r *http.Request, methods string) bool {
 }
 
 func apiHandler(w http.ResponseWriter, r *http.Request) {
-	if !strings.HasPrefix(r.URL.Path, "/galene-api/") {
+	if !strings.HasPrefix(r.URL.Path, "/owly-api/") {
 		http.NotFound(w, r)
 		return
 	}
 
-	first, kind, rest := splitPath(r.URL.Path[len("/galene-api"):])
+	first, kind, rest := splitPath(r.URL.Path[len("/owly-api"):])
 	if first != "/v0" {
 		http.NotFound(w, r)
 		return

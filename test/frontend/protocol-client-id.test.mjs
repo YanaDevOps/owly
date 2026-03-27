@@ -26,7 +26,7 @@ function extractFunction(name) {
 
   let index = protocolSource.indexOf('{', start);
   let depth = 0;
-  for (; index < protocolSource.length; index++) {
+  for (; index < protocolSource.length; index += 1) {
     const ch = protocolSource[index];
     if (ch === '{') {
       depth += 1;
@@ -41,28 +41,48 @@ function extractFunction(name) {
   throw new Error(`Could not parse function ${name}`);
 }
 
-function buildClientIdApi({ storedValue, sessionThrows = false } = {}) {
-  const storage = new Map();
-  if (storedValue !== undefined) {
-    storage.set('owly_client_id_v1', storedValue);
-  }
+function createStorageBacking(initialEntries = {}) {
+  return new Map(Object.entries(initialEntries));
+}
 
-  const sessionStorage = {
+function createStorage(backing, { throws = false } = {}) {
+  return {
     getItem(key) {
-      if (sessionThrows) {
-        throw new Error('session storage unavailable');
+      if (throws) {
+        throw new Error('storage unavailable');
       }
-      return storage.has(key) ? storage.get(key) : null;
+      return backing.has(key) ? backing.get(key) : null;
     },
     setItem(key, value) {
-      if (sessionThrows) {
-        throw new Error('session storage unavailable');
+      if (throws) {
+        throw new Error('storage unavailable');
       }
-      storage.set(key, value);
+      backing.set(key, value);
+    },
+    removeItem(key) {
+      if (throws) {
+        throw new Error('storage unavailable');
+      }
+      backing.delete(key);
     },
   };
+}
 
-  let randomSeed = 1;
+function buildClientIdApi({
+  localStorageBacking = createStorageBacking(),
+  sessionStorageBacking = createStorageBacking(),
+  windowName = '',
+  localThrows = false,
+  sessionThrows = false,
+  randomSeedStart = 1,
+} = {}) {
+  let randomSeed = randomSeedStart;
+  const window = {
+    name: windowName,
+    localStorage: createStorage(localStorageBacking, { throws: localThrows }),
+    sessionStorage: createStorage(sessionStorageBacking, { throws: sessionThrows }),
+  };
+
   const context = vm.createContext({
     Uint8Array,
     crypto: {
@@ -74,49 +94,114 @@ function buildClientIdApi({ storedValue, sessionThrows = false } = {}) {
         return array;
       },
     },
-    window: {
-      sessionStorage,
-    },
+    window,
   });
 
   const snippet = [
     extractFunction('toHex'),
     extractFunction('newRandomId'),
     extractConst('clientIdStorageKey'),
+    extractConst('clientUsernameStorageKey'),
+    extractConst('clientTabKeyWindowPrefix'),
+    extractFunction('isPersistentClientId'),
+    extractFunction('getPersistentClientTabKey'),
+    extractFunction('getPersistentClientScopedStorageKey'),
+    extractFunction('getPersistentClientValue'),
+    extractFunction('setPersistentClientValue'),
     extractFunction('getPersistentClientId'),
-    'this.__exports = { getPersistentClientId, clientIdStorageKey };',
+    extractFunction('getPersistentClientUsername'),
+    extractFunction('rememberPersistentClientUsername'),
+    extractFunction('rotatePersistentClientId'),
+    extractFunction('ensurePersistentClientIdForUsername'),
+    'this.__exports = {',
+    '  getPersistentClientId,',
+    '  getPersistentClientTabKey,',
+    '  ensurePersistentClientIdForUsername,',
+    '  getPersistentClientUsername,',
+    '  rememberPersistentClientUsername,',
+    '  clientIdStorageKey,',
+    '  clientUsernameStorageKey,',
+    '  getWindowName() { return window.name; },',
+    '};',
   ].join('\n\n');
 
   vm.runInContext(snippet, context);
   return {
     ...context.__exports,
-    storage,
+    localStorageBacking,
+    sessionStorageBacking,
   };
 }
 
-test('getPersistentClientId reuses a valid stored id', () => {
-  const storedId = '0123456789abcdef0123456789abcdef';
-  const api = buildClientIdApi({ storedValue: storedId });
+test('same tab keeps the same client id across refresh via window.name', () => {
+  const localStorageBacking = createStorageBacking();
+  const firstTab = buildClientIdApi({ localStorageBacking });
 
-  assert.equal(api.getPersistentClientId(), storedId);
-  assert.equal(api.storage.get(api.clientIdStorageKey), storedId);
+  const firstId = firstTab.getPersistentClientId();
+  const windowName = firstTab.getWindowName();
+  const refreshedTab = buildClientIdApi({
+    localStorageBacking,
+    windowName,
+  });
+
+  assert.match(firstId, /^[0-9a-f]{32}$/);
+  assert.equal(refreshedTab.getPersistentClientId(), firstId);
 });
 
-test('getPersistentClientId persists a generated id for the tab', () => {
+test('new tab gets a new client id even with shared localStorage', () => {
+  const localStorageBacking = createStorageBacking();
+  const firstTab = buildClientIdApi({ localStorageBacking });
+  const secondTab = buildClientIdApi({
+    localStorageBacking,
+    randomSeedStart: 91,
+  });
+
+  const firstId = firstTab.getPersistentClientId();
+  const secondId = secondTab.getPersistentClientId();
+
+  assert.notEqual(secondId, firstId);
+  assert.notEqual(secondTab.getWindowName(), firstTab.getWindowName());
+});
+
+test('legacy sessionStorage client id is promoted into tab-scoped storage', () => {
+  const legacyId = '0123456789abcdef0123456789abcdef';
+  const localStorageBacking = createStorageBacking();
+  const sessionStorageBacking = createStorageBacking({
+    owly_client_id_v1: legacyId,
+  });
+
+  const api = buildClientIdApi({
+    localStorageBacking,
+    sessionStorageBacking,
+  });
+
+  const promotedId = api.getPersistentClientId();
+  const scopedKey = `${api.clientIdStorageKey}:${api.getPersistentClientTabKey()}`;
+
+  assert.equal(promotedId, legacyId);
+  assert.equal(localStorageBacking.get(scopedKey), legacyId);
+});
+
+test('username change rotates client id within the same tab', () => {
   const api = buildClientIdApi();
 
-  const first = api.getPersistentClientId();
-  const second = api.getPersistentClientId();
+  const firstId = api.ensurePersistentClientIdForUsername('alice');
+  const secondId = api.ensurePersistentClientIdForUsername('alice');
+  const thirdId = api.ensurePersistentClientIdForUsername('bob');
 
-  assert.match(first, /^[0-9a-f]{32}$/);
-  assert.equal(second, first);
-  assert.equal(api.storage.get(api.clientIdStorageKey), first);
+  assert.equal(secondId, firstId);
+  assert.notEqual(thirdId, firstId);
+  assert.equal(api.getPersistentClientUsername(), 'bob');
 });
 
-test('getPersistentClientId falls back to random when sessionStorage fails', () => {
-  const api = buildClientIdApi({ sessionThrows: true });
+test('getPersistentClientId falls back to random when storage is unavailable', () => {
+  const api = buildClientIdApi({
+    localThrows: true,
+    sessionThrows: true,
+  });
   const id = api.getPersistentClientId();
 
   assert.match(id, /^[0-9a-f]{32}$/);
-  assert.equal(api.storage.size, 0);
+  assert.equal(api.localStorageBacking.size, 0);
+  assert.equal(api.sessionStorageBacking.size, 0);
 });

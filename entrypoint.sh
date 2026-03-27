@@ -2,17 +2,17 @@
 
 echo "[+] Starting Owly ..."
 
-exec ./galene \
-  ${GALENE_CPUPROFILE:+-cpuprofile ${GALENE_CPUPROFILE}} \
-  ${GALENE_DATA:+-data ${GALENE_DATA}} \
-  ${GALENE_GROUPS:+-groups ${GALENE_GROUPS}} \
-  ${GALENE_HTTP:+-http ${GALENE_HTTP}} \
-  ${GALENE_INSECURE:+-insecure} \
-  ${GALENE_MDNS:+-mdns} \
-  ${GALENE_MEMPROFILE:+-memprofile ${GALENE_MEMPROFILE}} \
-  ${GALENE_MUTEXPROFILE:+-mutexprofile ${GALENE_MUTEXPROFILE}} \
-  ${GALENE_RECORDINGS:+-recordings ${GALENE_RECORDINGS}} \
-  ${GALENE_NOCACHE:+-nocache} \
-  ${GALENE_RELAY_ONLY:+-relay-only} \
-  ${GALENE_STATIC:+-static ${GALENE_STATIC}} \
-  ${GALENE_TURN+-turn ${GALENE_TURN:-''}}
+exec ./owly \
+  ${OWLY_CPUPROFILE:+-cpuprofile ${OWLY_CPUPROFILE}} \
+  ${OWLY_DATA:+-data ${OWLY_DATA}} \
+  ${OWLY_GROUPS:+-groups ${OWLY_GROUPS}} \
+  ${OWLY_HTTP:+-http ${OWLY_HTTP}} \
+  ${OWLY_INSECURE:+-insecure} \
+  ${OWLY_MDNS:+-mdns} \
+  ${OWLY_MEMPROFILE:+-memprofile ${OWLY_MEMPROFILE}} \
+  ${OWLY_MUTEXPROFILE:+-mutexprofile ${OWLY_MUTEXPROFILE}} \
+  ${OWLY_RECORDINGS:+-recordings ${OWLY_RECORDINGS}} \
+  ${OWLY_NOCACHE:+-nocache} \
+  ${OWLY_RELAY_ONLY:+-relay-only} \
+  ${OWLY_STATIC:+-static ${OWLY_STATIC}} \
+  ${OWLY_TURN+-turn ${OWLY_TURN:-''}}

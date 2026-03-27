@@ -4,13 +4,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/pion/webrtc/v4"
 
-	"github.com/jech/galene/group"
+	"github.com/YanaDevOps/owly/group"
 )
 
 func TestParseGroupName(t *testing.T) {
@@ -92,6 +93,141 @@ func TestBase(t *testing.T) {
 			)
 		}
 	}
+}
+
+func TestBaseForwardedHeaders(t *testing.T) {
+	dir := t.TempDir()
+	group.DataDirectory = dir
+
+	c, err := json.Marshal(group.Configuration{})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	err = os.WriteFile(
+		filepath.Join(dir, "config.json"),
+		c,
+		0600,
+	)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	t.Run("proto and host", func(t *testing.T) {
+		req := &http.Request{
+			Host: "owly.internal:8443",
+			Header: http.Header{
+				"X-Forwarded-Proto": []string{"https"},
+				"X-Forwarded-Host":  []string{"owly.example.com"},
+			},
+		}
+		base, err := baseURL(req)
+		if err != nil {
+			t.Fatalf("baseURL: %v", err)
+		}
+		if got := base.String(); got != "https://owly.example.com" {
+			t.Fatalf("unexpected base url: %q", got)
+		}
+	})
+
+	t.Run("prefix", func(t *testing.T) {
+		req := &http.Request{
+			Host: "owly.internal:8443",
+			Header: http.Header{
+				"X-Forwarded-Proto":  []string{"https"},
+				"X-Forwarded-Host":   []string{"owly.example.com"},
+				"X-Forwarded-Prefix": []string{"/app"},
+			},
+		}
+		base, err := baseURL(req)
+		if err != nil {
+			t.Fatalf("baseURL: %v", err)
+		}
+		if got := base.String(); got != "https://owly.example.com/app" {
+			t.Fatalf("unexpected base url: %q", got)
+		}
+	})
+
+	t.Run("proxy url overrides forwarded", func(t *testing.T) {
+		c, err := json.Marshal(group.Configuration{
+			ProxyURL: "https://proxy.example.com/base",
+		})
+		if err != nil {
+			t.Fatalf("Marshal with proxy: %v", err)
+		}
+		err = os.WriteFile(
+			filepath.Join(dir, "config.json"),
+			c,
+			0600,
+		)
+		if err != nil {
+			t.Fatalf("Write with proxy: %v", err)
+		}
+
+		req := &http.Request{
+			Host: "owly.internal:8443",
+			Header: http.Header{
+				"X-Forwarded-Proto": []string{"http"},
+				"X-Forwarded-Host":  []string{"wrong.example.com"},
+			},
+		}
+		base, err := baseURL(req)
+		if err != nil {
+			t.Fatalf("baseURL: %v", err)
+		}
+		if got := base.String(); got != "https://proxy.example.com/base" {
+			t.Fatalf("unexpected base url: %q", got)
+		}
+	})
+}
+
+func TestHealthHandler(t *testing.T) {
+	t.Run("GET", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+		recorder := httptest.NewRecorder()
+
+		healthHandler(recorder, req)
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected status code: %v", recorder.Code)
+		}
+		if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+			t.Fatalf("unexpected content type: %q", got)
+		}
+		if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("unexpected cache control: %q", got)
+		}
+		if body := recorder.Body.String(); body != "{\"status\":\"ok\"}\n" {
+			t.Fatalf("unexpected body: %q", body)
+		}
+	})
+
+	t.Run("HEAD", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodHead, "/api/health", nil)
+		recorder := httptest.NewRecorder()
+
+		healthHandler(recorder, req)
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("unexpected status code: %v", recorder.Code)
+		}
+		if body := recorder.Body.String(); body != "" {
+			t.Fatalf("unexpected body for HEAD: %q", body)
+		}
+	})
+
+	t.Run("method not allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/health", nil)
+		recorder := httptest.NewRecorder()
+
+		healthHandler(recorder, req)
+
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("unexpected status code: %v", recorder.Code)
+		}
+		if got := recorder.Header().Get("Allow"); got != "OPTIONS, HEAD, GET" {
+			t.Fatalf("unexpected allow header: %q", got)
+		}
+	})
 }
 
 func TestParseSplit(t *testing.T) {

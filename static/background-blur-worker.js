@@ -1,4 +1,4 @@
-// Copyright (c) 2026 yanix.
+// Copyright (c) 2026 Yanix.
 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -166,7 +166,7 @@ function testWebGLSupport() {
     }
 }
 
-async function loadImageSegmenter(model) {
+async function loadImageSegmenter(model, allowCpuFallback = true) {
     // Test WebGL availability first
     const hasWebGL = testWebGLSupport();
     if (!hasWebGL) {
@@ -206,7 +206,7 @@ async function loadImageSegmenter(model) {
              gpuError.message.includes('kGpuService') ||
              gpuError.message.includes('WebGL'));
 
-        if (isWebGLError) {
+        if (isWebGLError && allowCpuFallback) {
             console.warn('[ImageSegmenter] GPU initialization failed, falling back to CPU:', gpuError.message);
             try {
                 options.baseOptions.delegate = 'CPU';
@@ -228,10 +228,10 @@ async function loadImageSegmenter(model) {
 
                 throw new Error(errorMsg);
             }
-        } else {
-            // Not a WebGL error, re-throw the original error
-            throw gpuError;
         }
+
+        // Not a fallback-eligible error, or CPU fallback is disabled.
+        throw gpuError;
     }
 }
 
@@ -273,7 +273,10 @@ onmessage = async e => {
         if (data.model) {
             if (imageSegmenter)
                 throw new Error("image segmenter already initialised");
-            imageSegmenter = await loadImageSegmenter(data.model);
+            imageSegmenter = await loadImageSegmenter(
+                data.model,
+                data.allowCpuFallback !== false,
+            );
             if (!imageSegmenter)
                 throw new Error("loadImageSegmenter returned null");
             postMessage({

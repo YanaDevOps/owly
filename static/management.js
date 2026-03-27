@@ -1,4 +1,4 @@
-// Copyright (c) 2026 yanix.
+// Copyright (c) 2026 Yanix.
 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -160,7 +160,7 @@ async function updateObject(url, values, etag) {
  * @returns {Promise<Array<string>>}
  */
 async function _listGroups() {
-    return await listObjects('/galene-api/v0/.groups/');
+    return await listObjects('/owly-api/v0/.groups/');
 }
 
 /**
@@ -171,7 +171,7 @@ async function _listGroups() {
  * @returns {Promise<Object>}
  */
 async function _getGroup(group, etag) {
-    return await getObject(`/galene-api/v0/.groups/${group}`, etag);
+    return await getObject(`/owly-api/v0/.groups/${group}`, etag);
 }
 
 /**
@@ -181,7 +181,7 @@ async function _getGroup(group, etag) {
  * @param {Object} [values]
  */
 async function _createGroup(group, values) {
-    return await createObject(`/galene-api/v0/.groups/${group}`, values);
+    return await createObject(`/owly-api/v0/.groups/${group}`, values);
 }
 
 /**
@@ -191,7 +191,7 @@ async function _createGroup(group, values) {
  * @param {string} [etag]
  */
 async function _deleteGroup(group, etag) {
-    return await deleteObject(`/galene-api/v0/.groups/${group}`, etag);
+    return await deleteObject(`/owly-api/v0/.groups/${group}`, etag);
 }
 
 /**
@@ -204,7 +204,7 @@ async function _deleteGroup(group, etag) {
  * @param {string} [etag]
  */
 async function _updateGroup(group, values, _etag) {
-    return await updateObject(`/galene-api/v0/.groups/${group}`, values, _etag);
+    return await updateObject(`/owly-api/v0/.groups/${group}`, values, _etag);
 }
 
 /**
@@ -214,7 +214,7 @@ async function _updateGroup(group, values, _etag) {
  * @returns {Promise<Array<string>>}
  */
 async function _listUsers(group) {
-    return await listObjects(`/galene-api/v0/.groups/${group}/.users/`);
+    return await listObjects(`/owly-api/v0/.groups/${group}/.users/`);
 }
 
 /**
@@ -226,11 +226,11 @@ async function _listUsers(group) {
  */
 function userURL(group, user, wildcard) {
     if (wildcard)
-        return `/galene-api/v0/.groups/${group}/.wildcard-user`;
+        return `/owly-api/v0/.groups/${group}/.wildcard-user`;
     else if (user === "")
-        return `/galene-api/v0/.groups/${group}/.empty-user`;
+        return `/owly-api/v0/.groups/${group}/.empty-user`;
     else
-        return `/galene-api/v0/.groups/${group}/.users/${user}`;
+        return `/owly-api/v0/.groups/${group}/.users/${user}`;
 }
 
 /**
@@ -321,7 +321,7 @@ async function _setPassword(group, user, wildcard, password, oldpassword) {
  * @returns {Promise<Array<string>>}
  */
 async function _listTokens(group) {
-    return await listObjects(`/galene-api/v0/.groups/${group}/.tokens/`);
+    return await listObjects(`/owly-api/v0/.groups/${group}/.tokens/`);
 }
 
 /**
@@ -333,7 +333,7 @@ async function _listTokens(group) {
  * @returns {Promise<Object>}
  */
 async function _getToken(group, token, etag) {
-    return await getObject(`/galene-api/v0/.groups/${group}/.tokens/${token}`,
+    return await getObject(`/owly-api/v0/.groups/${group}/.tokens/${token}`,
                            etag);
 }
 
@@ -354,7 +354,7 @@ async function _createToken(group, template) {
     };
 
     const r = await fetch(
-        `/galene-api/v0/.groups/${group}/.tokens/`,
+        `/owly-api/v0/.groups/${group}/.tokens/`,
         options);
     if (!r.ok)
         throw httpError(r);
@@ -374,7 +374,7 @@ async function _updateToken(group, token, etag) {
     if (!token.token)
         throw new Error("Unnamed token");
     return await updateObject(
-        `/galene-api/v0/.groups/${group}/.tokens/${token.token}`,
+        `/owly-api/v0/.groups/${group}/.tokens/${token.token}`,
         token, etag);
 }
 

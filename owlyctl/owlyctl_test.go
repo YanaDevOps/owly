@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/jech/galene/group"
+	"github.com/YanaDevOps/owly/group"
 )
 
 func TestMakePassword(t *testing.T) {

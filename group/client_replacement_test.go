@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jech/galene/conn"
+	"github.com/YanaDevOps/owly/conn"
 )
 
 type testClient struct {

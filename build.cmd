@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "ROOT=%~dp0"
-set "BINARY=galene.exe"
+set "BINARY=owly.exe"
 set "MEDIAPIPE_PACKAGE=@mediapipe/tasks-vision"
 set "MEDIAPIPE_DIR=static\third-party\tasks-vision"
 set "MODELS_DIR=%MEDIAPIPE_DIR%\models"
@@ -69,7 +69,7 @@ if not defined GOCACHE (
     ) else if exist "%ROOT%tmp-gocache\" (
         set "GOCACHE=%ROOT%tmp-gocache"
     ) else (
-        set "GOCACHE=%TEMP%\galene-gocache"
+        set "GOCACHE=%TEMP%\owly-gocache"
     )
 )
 
@@ -79,7 +79,7 @@ if not defined GOMODCACHE (
     ) else if exist "%ROOT%tmp-gomodcache\" (
         set "GOMODCACHE=%ROOT%tmp-gomodcache"
     ) else (
-        set "GOMODCACHE=%TEMP%\galene-gomodcache"
+        set "GOMODCACHE=%TEMP%\owly-gomodcache"
     )
 )
 
@@ -134,7 +134,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set "TMP_DIR=%TEMP%\galene-mediapipe-%RANDOM%%RANDOM%"
+set "TMP_DIR=%TEMP%\owly-mediapipe-%RANDOM%%RANDOM%"
 set "PACKAGE_ARCHIVE="
 
 mkdir "%TMP_DIR%" >nul 2>&1

@@ -4,7 +4,7 @@ package jitter
 import (
 	"sync/atomic"
 
-	"github.com/jech/galene/rtptime"
+	"github.com/YanaDevOps/owly/rtptime"
 )
 
 type Estimator struct {

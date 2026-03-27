@@ -122,9 +122,19 @@ By default the chart:
 
 - exposes Owly on port `8443`
 - creates persistent volumes for `data` and `recordings`
+- enables `livenessProbe` and `readinessProbe` against `GET /api/health`
 - ships a sample `public` group through a ConfigMap
 
 Override `values.yaml` to plug in your own image, ingress, storage class, and group configuration.
+
+The built-in health endpoint is unauthenticated:
+
+```text
+GET /api/health
+HEAD /api/health
+```
+
+It returns `200 OK` with `{"status":"ok"}` for `GET`. The Helm chart defaults probe scheme to `HTTP` because the sample chart runs with `OWLY_INSECURE=true`; if you terminate TLS inside the pod, set `probes.liveness.scheme` and `probes.readiness.scheme` to `HTTPS`.
 
 ## Project Structure
 

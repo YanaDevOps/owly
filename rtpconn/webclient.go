@@ -17,13 +17,13 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/jech/galene/conn"
-	"github.com/jech/galene/diskwriter"
-	"github.com/jech/galene/estimator"
-	"github.com/jech/galene/group"
-	"github.com/jech/galene/ice"
-	"github.com/jech/galene/token"
-	"github.com/jech/galene/unbounded"
+	"github.com/YanaDevOps/owly/conn"
+	"github.com/YanaDevOps/owly/diskwriter"
+	"github.com/YanaDevOps/owly/estimator"
+	"github.com/YanaDevOps/owly/group"
+	"github.com/YanaDevOps/owly/ice"
+	"github.com/YanaDevOps/owly/token"
+	"github.com/YanaDevOps/owly/unbounded"
 )
 
 func errorToWSCloseMessage(id string, err error) (*clientMessage, []byte) {

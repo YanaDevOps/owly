@@ -1,1 +1,1 @@
-docker build --pull -t dregistry.dcxv.com/galene . && docker push dregistry.dcxv.com/galene &&
+docker build --pull -t dregistry.dcxv.com/owly . && docker push dregistry.dcxv.com/owly &&

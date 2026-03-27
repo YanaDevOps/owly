@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jech/galene/rtptime"
+	"github.com/YanaDevOps/owly/rtptime"
 )
 
 func TestSanitise(t *testing.T) {

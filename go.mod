@@ -1,4 +1,4 @@
-module github.com/jech/galene
+module github.com/YanaDevOps/owly
 
 go 1.21
 

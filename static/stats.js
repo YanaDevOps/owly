@@ -1,4 +1,4 @@
-// Copyright (c) 2026 yanix.
+// Copyright (c) 2026 Yanix.
 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -25,7 +25,7 @@ async function listStats() {
 
     let l;
     try {
-        const r = await fetch('/galene-api/v0/.stats');
+        const r = await fetch('/owly-api/v0/.stats');
         if (!r.ok)
             throw new Error(`${r.status} ${r.statusText}`);
         l = await r.json();

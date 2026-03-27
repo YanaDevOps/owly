@@ -12,7 +12,7 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
-	"github.com/jech/galene/turnserver"
+	"github.com/YanaDevOps/owly/turnserver"
 )
 
 func TestPassword(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/pbkdf2"
 
-	"github.com/jech/galene/conn"
+	"github.com/YanaDevOps/owly/conn"
 )
 
 type RawPassword struct {

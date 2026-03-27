@@ -1,7 +1,7 @@
 .PHONY: all build blur clean help
 
 # Variables
-BINARY := galene
+BINARY := owly
 GOFLAGS := -trimpath -ldflags='-s -w'
 STATIC_DIR := static/third-party/tasks-vision
 MODELS_DIR := $(STATIC_DIR)/models

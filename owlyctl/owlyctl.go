@@ -26,8 +26,8 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/term"
 
-	"github.com/jech/galene/group"
-	"github.com/jech/galene/token"
+	"github.com/YanaDevOps/owly/group"
+	"github.com/YanaDevOps/owly/token"
 )
 
 type configuration struct {
@@ -55,7 +55,7 @@ var commands = map[string]command{
 	},
 	"initial-setup": {
 		command:     initialSetupCmd,
-		description: "initial setup of Owly and galenectl",
+		description: "initial setup of Owly and owlyctl",
 	},
 	"set-password": {
 		command:     setPasswordCmd,
@@ -125,8 +125,8 @@ func main() {
 		log.Fatalf("UserConfigDir: %v", err)
 	}
 	configFile = filepath.Join(
-		filepath.Join(configdir, "galene"),
-		"galenectl.json",
+		filepath.Join(configdir, "owly"),
+		"owlyctl.json",
 	)
 
 	flag.Usage = func() {
@@ -332,14 +332,14 @@ func hashPasswordCmd(cmdname string, args []string) {
 }
 
 func initialSetupCmd(cmdname string, args []string) {
-	var galeneConfigFn string
+	var owlyConfigFn string
 
 	cmd := flag.NewFlagSet(cmdname, flag.ExitOnError)
 	setUsage(cmd, cmdname,
 		"%v [option...] %v [option...]\n",
 		os.Args[0], cmdname,
 	)
-	cmd.StringVar(&galeneConfigFn, "config", "config.json",
+	cmd.StringVar(&owlyConfigFn, "config", "config.json",
 		"Owly configuration `file`")
 	cmd.Parse(args)
 
@@ -373,24 +373,24 @@ func initialSetupCmd(cmdname string, args []string) {
 		}
 	}
 
-	galeneConfig, err := os.OpenFile(galeneConfigFn,
+	owlyConfig, err := os.OpenFile(owlyConfigFn,
 		os.O_WRONLY|os.O_CREATE|os.O_CREATE|os.O_EXCL,
 		0600)
 	if err != nil {
-		log.Fatalf("Create %v: %v", galeneConfigFn, err)
+		log.Fatalf("Create %v: %v", owlyConfigFn, err)
 	}
 
-	galenectlConfig, err := os.OpenFile(configFile,
+	owlyctlConfig, err := os.OpenFile(configFile,
 		os.O_WRONLY|os.O_CREATE|os.O_CREATE|os.O_EXCL,
 		0600)
 	if err != nil {
-		galeneConfig.Close()
-		os.Remove(galeneConfigFn)
-		log.Fatalf("Create %v: %v", galeneConfigFn, err)
+		owlyConfig.Close()
+		os.Remove(owlyConfigFn)
+		log.Fatalf("Create %v: %v", owlyConfigFn, err)
 	}
 
-	defer galeneConfig.Close()
-	defer galenectlConfig.Close()
+	defer owlyConfig.Close()
+	defer owlyctlConfig.Close()
 
 	var users map[string]group.UserDescription
 	if adminPassword != "" {
@@ -416,11 +416,11 @@ func initialSetupCmd(cmdname string, args []string) {
 		Users:          users,
 	}
 
-	encoder := json.NewEncoder(galeneConfig)
+	encoder := json.NewEncoder(owlyConfig)
 	encoder.SetIndent("", "    ")
 	err = encoder.Encode(&config)
 	if err != nil {
-		log.Fatalf("Encode %v: %v", galeneConfigFn, err)
+		log.Fatalf("Encode %v: %v", owlyConfigFn, err)
 	}
 
 	ctlConfig := configuration{
@@ -430,14 +430,14 @@ func initialSetupCmd(cmdname string, args []string) {
 		AdminToken:    adminToken,
 	}
 
-	ctlEncoder := json.NewEncoder(galenectlConfig)
+	ctlEncoder := json.NewEncoder(owlyctlConfig)
 	ctlEncoder.SetIndent("", "    ")
 	err = ctlEncoder.Encode(&ctlConfig)
 	if err != nil {
 		log.Fatalf("Encode %v: %v", configFile, err)
 	}
 
-	fmt.Printf("The file %v has been created.  ", galeneConfigFn)
+	fmt.Printf("The file %v has been created.  ", owlyConfigFn)
 	fmt.Printf("Please copy it into your server's\n\"data/\" directory.\n")
 	fmt.Printf("The file %v has been created.  ", configFile)
 	fmt.Printf("It contains the administrator's\npassword in cleartext, ")
@@ -655,12 +655,12 @@ func setPasswordCmd(cmdname string, args []string) {
 	var u string
 	if wildcard {
 		u, err = url.JoinPath(
-			serverURL, "/galene-api/v0/.groups", groupname,
+			serverURL, "/owly-api/v0/.groups", groupname,
 			".wildcard-user/.password",
 		)
 	} else {
 		u, err = url.JoinPath(
-			serverURL, "/galene-api/v0/.groups", groupname,
+			serverURL, "/owly-api/v0/.groups", groupname,
 			".users", username, ".password",
 		)
 	}
@@ -710,12 +710,12 @@ func deletePasswordCmd(cmdname string, args []string) {
 	var err error
 	if wildcard {
 		u, err = url.JoinPath(
-			serverURL, "/galene-api/v0/.groups", groupname,
+			serverURL, "/owly-api/v0/.groups", groupname,
 			".wildcard-user/.password",
 		)
 	} else {
 		u, err = url.JoinPath(
-			serverURL, "/galene-api/v0/.groups", groupname,
+			serverURL, "/owly-api/v0/.groups", groupname,
 			".users", username, ".password",
 		)
 	}
@@ -828,7 +828,7 @@ func createGroupCmd(cmdname string, args []string) {
 	}
 
 	u, err := url.JoinPath(
-		serverURL, "/galene-api/v0/.groups", groupname,
+		serverURL, "/owly-api/v0/.groups", groupname,
 	)
 	if err != nil {
 		log.Fatalf("Build URL: %v", err)
@@ -874,7 +874,7 @@ func deleteGroupCmd(cmdname string, args []string) {
 	}
 
 	u, err := url.JoinPath(
-		serverURL, "/galene-api/v0/.groups", groupname,
+		serverURL, "/owly-api/v0/.groups", groupname,
 	)
 	if err != nil {
 		log.Fatalf("Build URL: %v", err)
@@ -913,7 +913,7 @@ func updateGroupCmd(cmdname string, args []string) {
 	}
 
 	u, err := url.JoinPath(
-		serverURL, "/galene-api/v0/.groups", groupname,
+		serverURL, "/owly-api/v0/.groups", groupname,
 	)
 	if err != nil {
 		log.Fatalf("Build URL: %v", err)
@@ -1025,7 +1025,7 @@ func listUsersCmd(cmdname string, args []string) {
 		os.Exit(1)
 	}
 
-	u, err := url.JoinPath(serverURL, "/galene-api/v0/.groups/", groupname,
+	u, err := url.JoinPath(serverURL, "/owly-api/v0/.groups/", groupname,
 		".users/")
 	if err != nil {
 		log.Fatalf("Build URL: %v", err)
@@ -1072,12 +1072,12 @@ func listUsersCmd(cmdname string, args []string) {
 func userURL(wildcard bool, groupname, username string) (string, error) {
 	if wildcard {
 		return url.JoinPath(
-			serverURL, "/galene-api/v0/.groups", groupname,
+			serverURL, "/owly-api/v0/.groups", groupname,
 			".wildcard-user",
 		)
 	}
 	return url.JoinPath(
-		serverURL, "/galene-api/v0/.groups", groupname,
+		serverURL, "/owly-api/v0/.groups", groupname,
 		".users", username,
 	)
 }
@@ -1250,12 +1250,12 @@ func deleteUserCmd(cmdname string, args []string) {
 	var err error
 	if wildcard {
 		u, err = url.JoinPath(
-			serverURL, "/galene-api/v0/.groups", groupname,
+			serverURL, "/owly-api/v0/.groups", groupname,
 			".wildcard-user",
 		)
 	} else {
 		u, err = url.JoinPath(
-			serverURL, "/galene-api/v0/.groups", groupname,
+			serverURL, "/owly-api/v0/.groups", groupname,
 			".users", username,
 		)
 	}
@@ -1288,7 +1288,7 @@ func showGroupCmd(cmdname string, args []string) {
 		log.Fatal("Option \"-group\" is required.")
 	}
 
-	u, err := url.JoinPath(serverURL, "/galene-api/v0/.groups/", groupname)
+	u, err := url.JoinPath(serverURL, "/owly-api/v0/.groups/", groupname)
 	if err != nil {
 		log.Fatalf("Build URL: %v", err)
 	}
@@ -1315,7 +1315,7 @@ func listGroupsCmd(cmdname string, args []string) {
 	cmd.Parse(args)
 	patterns := cmd.Args()
 
-	u, err := url.JoinPath(serverURL, "/galene-api/v0/.groups/")
+	u, err := url.JoinPath(serverURL, "/owly-api/v0/.groups/")
 	if err != nil {
 		log.Fatalf("Build URL: %v", err)
 	}
@@ -1365,7 +1365,7 @@ func listTokensCmd(cmdname string, args []string) {
 	}
 
 	u, err := url.JoinPath(
-		serverURL, "/galene-api/v0/.groups/", groupname.value, ".tokens/",
+		serverURL, "/owly-api/v0/.groups/", groupname.value, ".tokens/",
 	)
 
 	if err != nil {
@@ -1469,7 +1469,7 @@ func createTokenCmd(cmdname string, args []string) {
 	}
 
 	u, err := url.JoinPath(
-		serverURL, "/galene-api/v0/.groups/", groupname.value, ".tokens/",
+		serverURL, "/owly-api/v0/.groups/", groupname.value, ".tokens/",
 	)
 	if err != nil {
 		log.Fatalf("Build URL: %v", err)
@@ -1505,7 +1505,7 @@ func revokeTokenCmd(cmdname string, args []string) {
 	}
 
 	u, err := url.JoinPath(
-		serverURL, "/galene-api/v0/.groups/", groupname.value,
+		serverURL, "/owly-api/v0/.groups/", groupname.value,
 		".tokens", token,
 	)
 	if err != nil {
@@ -1544,7 +1544,7 @@ func deleteTokenCmd(cmdname string, args []string) {
 	}
 
 	u, err := url.JoinPath(
-		serverURL, "/galene-api/v0/.groups/", groupname.value,
+		serverURL, "/owly-api/v0/.groups/", groupname.value,
 		".tokens", token,
 	)
 	if err != nil {

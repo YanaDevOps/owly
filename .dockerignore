@@ -10,8 +10,8 @@ test-results
 logs
 recordings
 data
-galene
-galene.exe
+owly
+owly.exe
 tmp-*.log
 *.log
 

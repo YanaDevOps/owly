@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jech/galene/rtptime"
+	"github.com/YanaDevOps/owly/rtptime"
 )
 
 func TestEstimator(t *testing.T) {

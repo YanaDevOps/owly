@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jech/galene/group"
+	"github.com/YanaDevOps/owly/group"
 )
 
 func TestCSPHeader(t *testing.T) {

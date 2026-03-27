@@ -6,9 +6,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jech/galene/conn"
-	"github.com/jech/galene/packetcache"
-	"github.com/jech/galene/rtptime"
+	"github.com/YanaDevOps/owly/conn"
+	"github.com/YanaDevOps/owly/packetcache"
+	"github.com/YanaDevOps/owly/rtptime"
 )
 
 // packetIndex is a request to send a packet from the cache.

@@ -113,7 +113,7 @@ func Start() error {
 		return err
 	}
 
-	username = "galene"
+	username = "owly"
 	buf := make([]byte, 6)
 	_, err = rand.Read(buf)
 	if err != nil {
@@ -187,9 +187,9 @@ func Start() error {
 	log.Printf("Starting built-in TURN server on %v", addr.String())
 
 	server.server, err = turn.NewServer(turn.ServerConfig{
-		Realm: "galene.org",
+		Realm: "owly.org",
 		AuthHandler: func(u, r string, src net.Addr) ([]byte, bool) {
-			if u != username || r != "galene.org" {
+			if u != username || r != "owly.org" {
 				return nil, false
 			}
 			return turn.GenerateAuthKey(u, r, password), true

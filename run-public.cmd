@@ -11,7 +11,7 @@ pushd "%ROOT%" >nul || (
     exit /b 1
 )
 
-if not exist "galene.exe" (
+if not exist "owly.exe" (
     echo owly binary not found. Run build.cmd first.
     popd >nul
     exit /b 1
@@ -36,7 +36,7 @@ echo   /group/public/
 echo Stop the server with Ctrl+C in this window.
 echo.
 
-galene.exe -insecure -http :%PORT% -data .\data -groups .\groups -recordings .\recordings -turn ""
+owly.exe -insecure -http :%PORT% -data .\data -groups .\groups -recordings .\recordings -turn ""
 set "EXITCODE=%ERRORLEVEL%"
 popd >nul
 exit /b %EXITCODE%

@@ -22,10 +22,10 @@ import (
 
 	"github.com/jech/samplebuilder"
 
-	gcodecs "github.com/jech/galene/codecs"
-	"github.com/jech/galene/conn"
-	"github.com/jech/galene/group"
-	"github.com/jech/galene/rtptime"
+	gcodecs "github.com/YanaDevOps/owly/codecs"
+	"github.com/YanaDevOps/owly/conn"
+	"github.com/YanaDevOps/owly/group"
+	"github.com/YanaDevOps/owly/rtptime"
 )
 
 const (

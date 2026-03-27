@@ -4,28 +4,28 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 
-const galeneSource = fs.readFileSync(
-  path.resolve('static/galene.js'),
+const owlySource = fs.readFileSync(
+  path.resolve('static/owly.js'),
   'utf8',
 );
 
 function extractFunction(name) {
   const marker = `function ${name}(`;
-  const start = galeneSource.indexOf(marker);
+  const start = owlySource.indexOf(marker);
   if (start < 0) {
     throw new Error(`Could not find function ${name}`);
   }
 
-  let index = galeneSource.indexOf('{', start);
+  let index = owlySource.indexOf('{', start);
   let depth = 0;
-  for (; index < galeneSource.length; index += 1) {
-    const ch = galeneSource[index];
+  for (; index < owlySource.length; index += 1) {
+    const ch = owlySource[index];
     if (ch === '{') {
       depth += 1;
     } else if (ch === '}') {
       depth -= 1;
       if (depth === 0) {
-        return galeneSource.slice(start, index + 1);
+        return owlySource.slice(start, index + 1);
       }
     }
   }
@@ -73,15 +73,18 @@ function buildPerfApi({
     extractFunction('getHardwareConcurrency'),
     extractFunction('getDeviceMemory'),
     extractFunction('getPerformanceProfile'),
+    extractFunction('isMobilePerformanceProfile'),
     extractFunction('shouldUseReducedChromeEffects'),
     extractFunction('getDefaultSendSetting'),
     extractFunction('getDefaultSimulcastSetting'),
     extractFunction('getAdaptiveMaxFrameRate'),
+    extractFunction('getFilterFrameRate'),
     extractFunction('getActivityDetectionInterval'),
     extractFunction('getActivityDetectionPeriod'),
     extractFunction('buildVideoConstraints'),
     extractFunction('shouldCollectUpstreamStats'),
-    'this.__exports = { getPerformanceProfile, shouldUseReducedChromeEffects, getDefaultSendSetting, getDefaultSimulcastSetting, getAdaptiveMaxFrameRate, getActivityDetectionInterval, getActivityDetectionPeriod, buildVideoConstraints, shouldCollectUpstreamStats };',
+    extractFunction('shouldAllowCpuSegmentationFallback'),
+    'this.__exports = { getPerformanceProfile, isMobilePerformanceProfile, shouldUseReducedChromeEffects, getDefaultSendSetting, getDefaultSimulcastSetting, getAdaptiveMaxFrameRate, getFilterFrameRate, getActivityDetectionInterval, getActivityDetectionPeriod, buildVideoConstraints, shouldCollectUpstreamStats, shouldAllowCpuSegmentationFallback };',
   ].join('\n\n');
 
   vm.runInContext(snippet, context);
@@ -167,6 +170,60 @@ function buildConnectionHealthApi({ now = 1000 } = {}) {
   return context.__exports;
 }
 
+function buildMediaBudgetApi({
+  performanceProfile = 'desktop',
+  send = 'unlimited',
+  simulcast = 'auto',
+  userCount = 3,
+} = {}) {
+  const users = {};
+  for (let i = 0; i < userCount; i += 1) {
+    users[`user-${i}`] = { permissions: {} };
+  }
+
+  const context = vm.createContext({
+    filters: {
+      'background-blur': { kind: 'blur' },
+      'background-replace': { kind: 'replace' },
+    },
+    getPerformanceProfile() {
+      return performanceProfile;
+    },
+    getSettings() {
+      return {
+        send,
+        simulcast,
+      };
+    },
+    serverConnection: {
+      users,
+    },
+    console,
+  });
+
+  const snippet = [
+    'const simulcastRate = 100000;',
+    'const legacyNormalVideoRate = 700000;',
+    'const mobileUnlimitedVideoRate = 1400000;',
+    'const lowPowerMobileUnlimitedVideoRate = 900000;',
+    'const mobileEffectVideoRate = 900000;',
+    'const lowPowerMobileEffectVideoRate = 600000;',
+    'const mobilePressureFallbackVideoRate = 500000;',
+    'const lowPowerMobilePressureFallbackVideoRate = 350000;',
+    extractFunction('isMobilePerformanceProfile'),
+    extractFunction('isExpensiveFilterDefinition'),
+    extractFunction('streamHasExpensiveFilter'),
+    extractFunction('getSelectedMaxVideoThroughput'),
+    extractFunction('getMobileProfileVideoThroughputCap'),
+    extractFunction('getMaxVideoThroughput'),
+    extractFunction('doSimulcast'),
+    'this.__exports = { getMaxVideoThroughput, doSimulcast, filters };',
+  ].join('\n\n');
+
+  vm.runInContext(snippet, context);
+  return context.__exports;
+}
+
 function buildReconnectPolicyApi() {
   const context = vm.createContext({});
 
@@ -184,16 +241,19 @@ test('desktop profile keeps performance profile as desktop and disables adaptive
   const api = buildPerfApi();
 
   assert.equal(api.getPerformanceProfile(), 'desktop');
+  assert.equal(api.isMobilePerformanceProfile(), false);
   assert.equal(api.shouldUseReducedChromeEffects(), false);
-  assert.equal(api.getDefaultSendSetting(), 'unlimited');
-  assert.equal(api.getDefaultSimulcastSetting(), 'on');
+  assert.equal(api.getDefaultSendSetting(), 'normal');
+  assert.equal(api.getDefaultSimulcastSetting(), 'auto');
   assert.equal(api.getAdaptiveMaxFrameRate(), 30);
+  assert.equal(api.getFilterFrameRate(30), 30);
   assert.equal(api.getActivityDetectionInterval(), 500);
   assert.equal(api.getActivityDetectionPeriod(), 1200);
   assert.equal(api.shouldCollectUpstreamStats(), true);
+  assert.equal(api.shouldAllowCpuSegmentationFallback(), true);
 });
 
-test('modern mobile profile applies balanced mobile caps', () => {
+test('modern mobile profile keeps legacy send defaults and simple constraints', () => {
   const api = buildPerfApi({
     userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/122.0.0.0 Mobile Safari/537.36',
     hardwareConcurrency: 8,
@@ -204,18 +264,22 @@ test('modern mobile profile applies balanced mobile caps', () => {
   const constraints = api.buildVideoConstraints({ video: '', blackboardMode: false });
 
   assert.equal(api.getPerformanceProfile(), 'mobile');
+  assert.equal(api.isMobilePerformanceProfile(), true);
   assert.equal(api.shouldUseReducedChromeEffects(), true);
+  assert.equal(api.getDefaultSendSetting(), 'normal');
   assert.equal(api.getDefaultSimulcastSetting(), 'auto');
   assert.equal(api.getAdaptiveMaxFrameRate(), 24);
+  assert.equal(api.getFilterFrameRate(15), 12);
   assert.equal(api.getActivityDetectionInterval(), 1000);
   assert.equal(api.getActivityDetectionPeriod(), 1800);
-  assert.deepEqual(JSON.parse(JSON.stringify(constraints.frameRate)), { ideal: 24, max: 24 });
+  assert.equal(constraints.frameRate, undefined);
   assert.equal(constraints.width, undefined);
   assert.equal(constraints.height, undefined);
   assert.deepEqual(JSON.parse(JSON.stringify(constraints.aspectRatio)), { ideal: 4 / 3 });
+  assert.equal(api.shouldAllowCpuSegmentationFallback(), false);
 });
 
-test('low power mobile profile applies stricter caps', () => {
+test('low power mobile profile keeps legacy capture constraints', () => {
   const api = buildPerfApi({
     userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15 Version/15.6 Mobile/15E148 Safari/604.1',
     hardwareConcurrency: 4,
@@ -226,19 +290,23 @@ test('low power mobile profile applies stricter caps', () => {
 
   const constraints = api.buildVideoConstraints({
     video: '',
-    resolution: [1920, 1080],
     blackboardMode: false,
   });
 
   assert.equal(api.getPerformanceProfile(), 'low-power-mobile');
+  assert.equal(api.isMobilePerformanceProfile(), true);
   assert.equal(api.shouldUseReducedChromeEffects(), true);
+  assert.equal(api.getDefaultSendSetting(), 'normal');
   assert.equal(api.getDefaultSimulcastSetting(), 'auto');
   assert.equal(api.getAdaptiveMaxFrameRate(), 15);
+  assert.equal(api.getFilterFrameRate(15), 10);
   assert.equal(api.getActivityDetectionInterval(), 1500);
   assert.equal(api.getActivityDetectionPeriod(), 2200);
-  assert.deepEqual(JSON.parse(JSON.stringify(constraints.frameRate)), { ideal: 15, max: 15 });
-  assert.deepEqual(JSON.parse(JSON.stringify(constraints.width)), { ideal: 1920 });
-  assert.deepEqual(JSON.parse(JSON.stringify(constraints.height)), { ideal: 1080 });
+  assert.equal(constraints.frameRate, undefined);
+  assert.equal(constraints.width, undefined);
+  assert.equal(constraints.height, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(constraints.aspectRatio)), { ideal: 4 / 3 });
+  assert.equal(api.shouldAllowCpuSegmentationFallback(), false);
 });
 
 test('firefox keeps simulcast default disabled', () => {
@@ -249,6 +317,35 @@ test('firefox keeps simulcast default disabled', () => {
   });
 
   assert.equal(api.getDefaultSimulcastSetting(), 'off');
+});
+
+test('media budget falls back to legacy normal throughput', () => {
+  const api = buildMediaBudgetApi({
+    performanceProfile: 'mobile',
+    send: 'normal',
+    simulcast: 'auto',
+  });
+
+  assert.equal(api.getMaxVideoThroughput({ userdata: {} }), 700000);
+  assert.equal(api.doSimulcast(), true);
+});
+
+test('mobile throughput no longer depends on filter or pressure caps', () => {
+  const api = buildMediaBudgetApi({
+    performanceProfile: 'low-power-mobile',
+    send: 'unlimited',
+  });
+
+  assert.equal(api.getMaxVideoThroughput({
+    userdata: {
+      filterDefinition: api.filters['background-replace'],
+    },
+  }), null);
+  assert.equal(api.getMaxVideoThroughput({
+    userdata: {
+      pressureBitrateCap: 350000,
+    },
+  }), null);
 });
 
 test('old settings are normalised immediately when read', () => {

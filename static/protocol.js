@@ -1,4 +1,4 @@
-// Copyright (c) 2026 yanix.
+// Copyright (c) 2026 Yanix.
 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -50,60 +50,125 @@ function newRandomId() {
 
 const clientIdStorageKey = 'owly_client_id_v1';
 const clientUsernameStorageKey = 'owly_client_username_v1';
+const clientTabKeyWindowPrefix = 'owly-client-tab-v1:';
 
-/**
- * getPersistentClientId returns a stable id for the current browser tab.
- * It survives refreshes via sessionStorage, but a new tab gets a new id.
- *
- * @returns {string}
- */
-function getPersistentClientId() {
-    try {
-        if (typeof window === 'undefined' || !window.sessionStorage)
-            return newRandomId();
-        const stored = window.sessionStorage.getItem(clientIdStorageKey);
-        if (stored && /^[0-9a-f]{32}$/.test(stored))
-            return stored;
-        const id = newRandomId();
-        window.sessionStorage.setItem(clientIdStorageKey, id);
-        return id;
-    } catch (_e) {
-        return newRandomId();
-    }
+function isPersistentClientId(value) {
+    return /^[0-9a-f]{32}$/.test(value);
 }
 
-function getPersistentClientUsername() {
+function getPersistentClientTabKey() {
     try {
-        if (typeof window === 'undefined' || !window.sessionStorage)
+        if (typeof window === 'undefined')
             return null;
-        return window.sessionStorage.getItem(clientUsernameStorageKey);
+        const existing = typeof window.name === 'string' ? window.name : '';
+        if (existing.startsWith(clientTabKeyWindowPrefix)) {
+            const tabKey = existing.slice(clientTabKeyWindowPrefix.length);
+            if (isPersistentClientId(tabKey))
+                return tabKey;
+        }
+        const tabKey = newRandomId();
+        window.name = `${clientTabKeyWindowPrefix}${tabKey}`;
+        return tabKey;
     } catch (_e) {
         return null;
     }
 }
 
-function rememberPersistentClientUsername(username) {
+function getPersistentClientScopedStorageKey(baseKey) {
+    const tabKey = getPersistentClientTabKey();
+    if (!tabKey)
+        return null;
+    return `${baseKey}:${tabKey}`;
+}
+
+function getPersistentClientValue(baseKey, validate) {
     try {
-        if (typeof window === 'undefined' || !window.sessionStorage)
-            return;
-        if (!username) {
-            window.sessionStorage.removeItem(clientUsernameStorageKey);
-            return;
+        if (typeof window === 'undefined')
+            return null;
+
+        const scopedKey = getPersistentClientScopedStorageKey(baseKey);
+        if (scopedKey && window.localStorage) {
+            const stored = window.localStorage.getItem(scopedKey);
+            if (stored !== null && (!validate || validate(stored)))
+                return stored;
         }
-        window.sessionStorage.setItem(clientUsernameStorageKey, username);
+
+        if (window.sessionStorage) {
+            const legacy = window.sessionStorage.getItem(baseKey);
+            if (legacy !== null && (!validate || validate(legacy))) {
+                if (scopedKey && window.localStorage)
+                    window.localStorage.setItem(scopedKey, legacy);
+                return legacy;
+            }
+        }
     } catch (_e) {
         // Ignore storage failures.
     }
+    return null;
+}
+
+function setPersistentClientValue(baseKey, value) {
+    let stored = false;
+    if (typeof window === 'undefined')
+        return stored;
+
+    const scopedKey = getPersistentClientScopedStorageKey(baseKey);
+
+    try {
+        if (scopedKey && window.localStorage) {
+            if (value === null || value === undefined)
+                window.localStorage.removeItem(scopedKey);
+            else
+                window.localStorage.setItem(scopedKey, value);
+            stored = true;
+        }
+    } catch (_e) {
+        // Ignore localStorage failures and keep fallback below.
+    }
+
+    try {
+        if (window.sessionStorage) {
+            if (value === null || value === undefined)
+                window.sessionStorage.removeItem(baseKey);
+            else
+                window.sessionStorage.setItem(baseKey, value);
+            stored = true;
+        }
+    } catch (_e) {
+        // Ignore sessionStorage failures.
+    }
+
+    return stored;
+}
+
+/**
+ * getPersistentClientId returns a stable id for the current browser tab.
+ * It survives refreshes via window.name + storage, but a new tab gets a new id.
+ *
+ * @returns {string}
+ */
+function getPersistentClientId() {
+    const stored = getPersistentClientValue(clientIdStorageKey, isPersistentClientId);
+    if (stored)
+        return stored;
+    const id = newRandomId();
+    if (setPersistentClientValue(clientIdStorageKey, id))
+        return id;
+    return newRandomId();
+}
+
+function getPersistentClientUsername() {
+    return getPersistentClientValue(clientUsernameStorageKey);
+}
+
+function rememberPersistentClientUsername(username) {
+    const value = username ? `${username}` : null;
+    setPersistentClientValue(clientUsernameStorageKey, value);
 }
 
 function rotatePersistentClientId() {
     const id = newRandomId();
-    try {
-        if (typeof window !== 'undefined' && window.sessionStorage)
-            window.sessionStorage.setItem(clientIdStorageKey, id);
-    } catch (_e) {
-        // Ignore storage failures.
-    }
+    setPersistentClientValue(clientIdStorageKey, id);
     return id;
 }
 
@@ -120,6 +185,21 @@ function ensurePersistentClientIdForUsername(username) {
 
     rememberPersistentClientUsername(nextUsername);
     return getPersistentClientId();
+}
+
+function isLikelyMobileUserAgent(userAgent) {
+    const ua = typeof userAgent === 'string' ?
+        userAgent :
+        ((typeof navigator !== 'undefined' && navigator.userAgent) || '');
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+}
+
+function getSocketLivenessConfig() {
+    return {
+        pingIntervalMs: 10000,
+        idlePingDelayMs: 15000,
+        livenessTimeoutMs: 65000,
+    };
 }
 
 let localIdCounter = 0;
@@ -448,8 +528,11 @@ ServerConnection.prototype.send = function(m) {
  */
 ServerConnection.prototype.connect = function(url) {
     const sc = this;
-    const pingIntervalMs = 10000;
-    const livenessTimeoutMs = 120000;
+    const {
+        pingIntervalMs,
+        idlePingDelayMs,
+        livenessTimeoutMs,
+    } = getSocketLivenessConfig();
 
     if (sc.socket)
         throw new Error("Attempting to connect stale connection");
@@ -463,62 +546,25 @@ ServerConnection.prototype.connect = function(url) {
     sc.socket = new WebSocket(url);
 
     this.pingHandler = setInterval(_e => {
-        if (!sc.lastServerMessage)
-            return;
-        const d = Date.now() - sc.lastServerMessage;
-        if (d > livenessTimeoutMs) {
-            sc.livenessTimeoutStreak++;
-            // Avoid false-positive disconnects during short main-thread stalls.
-            if (sc.livenessTimeoutStreak < 3)
-                return;
-            sc.error(new Error(`Timeout: no server messages for ${Math.round(d / 1000)}s`));
+        if (!sc.lastServerMessage) {
+            sc.error(new Error('Timeout'));
             return;
         }
-        sc.livenessTimeoutStreak = 0;
-        if (sc.version) {
-            try {
-                sc.send({type: 'ping'});
-            } catch (_e) {
-                // Socket is likely closing; onclose will handle cleanup.
-            }
+        const d = new Date().valueOf() - sc.lastServerMessage;
+        if (d > livenessTimeoutMs) {
+            sc.error(new Error('Timeout'));
+            return;
+        }
+        if (sc.version && d >= idlePingDelayMs) {
+            sc.send({type: 'ping'});
         }
     }, pingIntervalMs);
 
     this.socket.onerror = function(e) {
-        if (sc.onerror) {
-            // WebSocket error events often have no useful information
-            // Provide context about what was being attempted
-            const state = sc.socket ? sc.socket.readyState : 'unknown';
-            const stateName = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][state] || state;
-            let errorMessage = `WebSocket connection error (state: ${stateName}`;
-            if (sc.group)
-                errorMessage += `, group: ${sc.group}`;
-            if (sc.username)
-                errorMessage += `, user: ${sc.username}`;
-            errorMessage += ')';
-
-            // Try to extract any useful info from the event
-            if (e) {
-                if (e.message)
-                    errorMessage += ': ' + e.message;
-                else if (e.type)
-                    errorMessage += ' [' + e.type + ']';
-            }
-
-            const err = new Error(errorMessage);
-            err.name = 'SocketError';
-            err.websocketState = stateName;
-            err.websocketUrl = sc.socket && sc.socket.url;
-            // Capture stack at this point for better debugging
-            if (Error.captureStackTrace)
-                Error.captureStackTrace(err, sc.socket.onerror);
-            sc.onerror.call(sc, err);
-        }
+        if (sc.onerror)
+            sc.onerror.call(sc, new Error('Socket error: ' + e));
     };
     this.socket.onopen = function(_e) {
-        // Avoid liveness timeout if handshake processing is briefly delayed.
-        sc.lastServerMessage = Date.now();
-        sc.livenessTimeoutStreak = 0;
         try {
             sc.send({
                 type: 'handshake',

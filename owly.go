@@ -14,13 +14,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jech/galene/diskwriter"
-	"github.com/jech/galene/group"
-	"github.com/jech/galene/ice"
-	"github.com/jech/galene/limit"
-	"github.com/jech/galene/token"
-	"github.com/jech/galene/turnserver"
-	"github.com/jech/galene/webserver"
+	"github.com/YanaDevOps/owly/diskwriter"
+	"github.com/YanaDevOps/owly/group"
+	"github.com/YanaDevOps/owly/ice"
+	"github.com/YanaDevOps/owly/limit"
+	"github.com/YanaDevOps/owly/token"
+	"github.com/YanaDevOps/owly/turnserver"
+	"github.com/YanaDevOps/owly/webserver"
 )
 
 func main() {

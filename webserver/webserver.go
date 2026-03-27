@@ -5,11 +5,11 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"mime"
 	"fmt"
 	"html"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,10 +22,10 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/YanaDevOps/owly/diskwriter"
+	"github.com/YanaDevOps/owly/group"
+	"github.com/YanaDevOps/owly/rtpconn"
 	"github.com/jech/cert"
-	"github.com/jech/galene/diskwriter"
-	"github.com/jech/galene/group"
-	"github.com/jech/galene/rtpconn"
 )
 
 var server *http.Server
@@ -42,25 +42,32 @@ func init() {
 	mime.AddExtensionType(".tflite", "application/octet-stream")
 }
 
-func Serve(address string, dataDir string) error {
-	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+func newServerHandler() http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		// Avoid noisy 404s in browsers when no favicon is installed.
 		w.WriteHeader(http.StatusNoContent)
 	})
-	http.Handle("/", &fileHandler{http.Dir(StaticRoot)})
-	http.HandleFunc("/group/", groupHandler)
-	http.HandleFunc("/recordings",
+	mux.HandleFunc("/api/health", healthHandler)
+	mux.Handle("/", &fileHandler{http.Dir(StaticRoot)})
+	mux.HandleFunc("/group/", groupHandler)
+	mux.HandleFunc("/recordings",
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r,
 				"/recordings/", http.StatusPermanentRedirect)
 		})
-	http.HandleFunc("/recordings/", recordingsHandler)
-	http.HandleFunc("/ws", wsHandler)
-	http.HandleFunc("/public-groups.json", publicHandler)
-	http.HandleFunc("/galene-api/", apiHandler)
+	mux.HandleFunc("/recordings/", recordingsHandler)
+	mux.HandleFunc("/ws", wsHandler)
+	mux.HandleFunc("/public-groups.json", publicHandler)
+	mux.HandleFunc("/owly-api/", apiHandler)
+	return mux
+}
 
+func Serve(address string, dataDir string) error {
 	s := &http.Server{
 		Addr:              address,
+		Handler:           newServerHandler(),
 		ReadHeaderTimeout: 60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -422,7 +429,7 @@ func groupHandler(w http.ResponseWriter, r *http.Request) {
 				if err2 == nil {
 					status := g2.Status(false, nil)
 					cspHeader(w, status.AuthServer)
-					serveFile(w, r, filepath.Join(StaticRoot, "galene.html"))
+					serveFile(w, r, filepath.Join(StaticRoot, "owly.html"))
 					return
 				}
 				if !errors.Is(err2, os.ErrNotExist) {
@@ -448,7 +455,7 @@ func groupHandler(w http.ResponseWriter, r *http.Request) {
 
 	status := g.Status(false, nil)
 	cspHeader(w, status.AuthServer)
-	serveFile(w, r, filepath.Join(StaticRoot, "galene.html"))
+	serveFile(w, r, filepath.Join(StaticRoot, "owly.html"))
 }
 
 func baseURL(r *http.Request) (*url.URL, error) {
@@ -469,6 +476,20 @@ func baseURL(r *http.Request) (*url.URL, error) {
 	}
 	host := r.Host
 	path := ""
+	if proto := forwardedHeaderValue(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+		switch strings.ToLower(proto) {
+		case "https", "wss":
+			scheme = "https"
+		case "http", "ws":
+			scheme = "http"
+		}
+	}
+	if forwardedHost := forwardedHeaderValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+		host = forwardedHost
+	}
+	if forwardedPrefix := forwardedHeaderValue(r.Header.Get("X-Forwarded-Prefix")); forwardedPrefix != "" {
+		path = forwardedPrefix
+	}
 	if pu != nil {
 		if pu.Scheme != "" {
 			scheme = pu.Scheme
@@ -484,6 +505,16 @@ func baseURL(r *http.Request) (*url.URL, error) {
 		Path:   path,
 	}
 	return &base, nil
+}
+
+func forwardedHeaderValue(header string) string {
+	if header == "" {
+		return ""
+	}
+	if i := strings.IndexByte(header, ','); i >= 0 {
+		header = header[:i]
+	}
+	return strings.TrimSpace(header)
 }
 
 func groupStatusHandler(w http.ResponseWriter, r *http.Request) {

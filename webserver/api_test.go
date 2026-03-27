@@ -12,22 +12,22 @@ import (
 
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
-	"github.com/jech/galene/group"
-	"github.com/jech/galene/token"
+	"github.com/YanaDevOps/owly/group"
+	"github.com/YanaDevOps/owly/token"
 )
 
 var setupOnce sync.Once
+var testServerURL string
 
 func setup() {
 	setupOnce.Do(func() {
 		Insecure = true
-		err := Serve("localhost:1234", "")
-		if err != nil {
-			panic("could not start server")
-		}
+		server := httptest.NewServer(newServerHandler())
+		testServerURL = server.URL
 	})
 }
 
@@ -77,7 +77,7 @@ func TestApi(t *testing.T) {
 
 	do := func(method, path, ctype, im, inm, body string) (*http.Response, error) {
 		req, err := http.NewRequest(method,
-			"http://localhost:1234"+path,
+			testServerURL+path,
 			strings.NewReader(body),
 		)
 		if err != nil {
@@ -115,19 +115,19 @@ func TestApi(t *testing.T) {
 	}
 
 	var groups []string
-	err = getJSON("/galene-api/v0/.groups/", &groups)
+	err = getJSON("/owly-api/v0/.groups/", &groups)
 	if err != nil || len(groups) != 0 {
 		t.Errorf("Get groups: %v", err)
 	}
 
-	resp, err := do("PUT", "/galene-api/v0/.groups/test/",
+	resp, err := do("PUT", "/owly-api/v0/.groups/test/",
 		"application/json", "\"foo\"", "",
 		"{}")
 	if err != nil || resp.StatusCode != http.StatusPreconditionFailed {
 		t.Errorf("Create group (bad ETag): %v %v", err, resp.StatusCode)
 	}
 
-	resp, err = do("PUT", "/galene-api/v0/.groups/test/",
+	resp, err = do("PUT", "/owly-api/v0/.groups/test/",
 		"text/plain", "", "",
 		"Hello, world!")
 	if err != nil || resp.StatusCode != http.StatusUnsupportedMediaType {
@@ -135,7 +135,7 @@ func TestApi(t *testing.T) {
 			err, resp.StatusCode)
 	}
 
-	resp, err = do("PUT", "/galene-api/v0/.groups/test/",
+	resp, err = do("PUT", "/owly-api/v0/.groups/test/",
 		"application/json", "", "*",
 		"{}")
 	if err != nil || resp.StatusCode != http.StatusCreated {
@@ -143,30 +143,30 @@ func TestApi(t *testing.T) {
 	}
 
 	var desc *group.Description
-	err = getJSON("/galene-api/v0/.groups/test/", &desc)
+	err = getJSON("/owly-api/v0/.groups/test/", &desc)
 	if err != nil || len(desc.Users) != 0 {
 		t.Errorf("Get group: %v", err)
 	}
 
-	resp, err = do("PUT", "/galene-api/v0/.groups/test/",
+	resp, err = do("PUT", "/owly-api/v0/.groups/test/",
 		"application/json", "", "*",
 		"{}")
 	if err != nil || resp.StatusCode != http.StatusPreconditionFailed {
 		t.Errorf("Create group (bad ETag): %v %v", err, resp.StatusCode)
 	}
 
-	resp, err = do("DELETE", "/galene-api/v0/.groups/test/",
+	resp, err = do("DELETE", "/owly-api/v0/.groups/test/",
 		"", "", "*", "")
 	if err != nil || resp.StatusCode != http.StatusPreconditionFailed {
 		t.Errorf("Delete group (bad ETag): %v %v", err, resp.StatusCode)
 	}
 
-	err = getJSON("/galene-api/v0/.groups/", &groups)
+	err = getJSON("/owly-api/v0/.groups/", &groups)
 	if err != nil || len(groups) != 1 || groups[0] != "test" {
 		t.Errorf("Get groups: %v %v", err, groups)
 	}
 
-	resp, err = do("PUT", "/galene-api/v0/.groups/test/.keys",
+	resp, err = do("PUT", "/owly-api/v0/.groups/test/.keys",
 		"application/jwk-set+json", "", "",
 		`{"keys": [{
                             "kty": "oct", "alg": "HS256",
@@ -176,12 +176,12 @@ func TestApi(t *testing.T) {
 		t.Errorf("Set key: %v %v", err, resp.StatusCode)
 	}
 
-	err = getJSON("/galene-api/v0/.groups/test/.users/", &groups)
+	err = getJSON("/owly-api/v0/.groups/test/.users/", &groups)
 	if err != nil || len(groups) != 0 {
 		t.Errorf("Get users: %v", err)
 	}
 
-	resp, err = do("PUT", "/galene-api/v0/.groups/test/.users/jch",
+	resp, err = do("PUT", "/owly-api/v0/.groups/test/.users/jch",
 		"text/plain", "", "*",
 		`hello, world!`)
 	if err != nil || resp.StatusCode != http.StatusUnsupportedMediaType {
@@ -189,7 +189,7 @@ func TestApi(t *testing.T) {
 			err, resp.StatusCode)
 	}
 
-	resp, err = do("PUT", "/galene-api/v0/.groups/test/.users/jch",
+	resp, err = do("PUT", "/owly-api/v0/.groups/test/.users/jch",
 		"application/json", "", "*",
 		`{"permissions": "present"}`)
 	if err != nil || resp.StatusCode != http.StatusCreated {
@@ -197,26 +197,26 @@ func TestApi(t *testing.T) {
 	}
 
 	var users []string
-	err = getJSON("/galene-api/v0/.groups/test/.users/", &users)
+	err = getJSON("/owly-api/v0/.groups/test/.users/", &users)
 	if err != nil || len(users) != 1 || users[0] != "jch" {
 		t.Errorf("Get users: %v %v", err, users)
 	}
 
-	resp, err = do("PUT", "/galene-api/v0/.groups/test/.users/jch",
+	resp, err = do("PUT", "/owly-api/v0/.groups/test/.users/jch",
 		"application/json", "", "*",
 		`{"permissions": "present"}`)
 	if err != nil || resp.StatusCode != http.StatusPreconditionFailed {
 		t.Errorf("Create user (bad ETag): %v %v", err, resp.StatusCode)
 	}
 
-	resp, err = do("PUT", "/galene-api/v0/.groups/test/.users/jch/.password",
+	resp, err = do("PUT", "/owly-api/v0/.groups/test/.users/jch/.password",
 		"application/json", "", "",
 		`"toto"`)
 	if err != nil || resp.StatusCode != http.StatusNoContent {
 		t.Errorf("Set password (PUT): %v %v", err, resp.StatusCode)
 	}
 
-	resp, err = do("POST", "/galene-api/v0/.groups/test/.users/jch/.password",
+	resp, err = do("POST", "/owly-api/v0/.groups/test/.users/jch/.password",
 		"text/plain", "", "",
 		`toto`)
 	if err != nil || resp.StatusCode != http.StatusNoContent {
@@ -224,7 +224,7 @@ func TestApi(t *testing.T) {
 	}
 
 	var user group.UserDescription
-	err = getJSON("/galene-api/v0/.groups/test/.users/jch", &user)
+	err = getJSON("/owly-api/v0/.groups/test/.users/jch", &user)
 	if err != nil {
 		t.Errorf("Get user: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestApi(t *testing.T) {
 		t.Errorf("Password.Type: %v", desc.Users["jch"].Password.Type)
 	}
 
-	resp, err = do("DELETE", "/galene-api/v0/.groups/test/.users/jch",
+	resp, err = do("DELETE", "/owly-api/v0/.groups/test/.users/jch",
 		"", "", "", "")
 	if err != nil || resp.StatusCode != http.StatusNoContent {
 		t.Errorf("Delete group: %v %v", err, resp.StatusCode)
@@ -260,14 +260,14 @@ func TestApi(t *testing.T) {
 		t.Errorf("Users (after delete): %#v", desc.Users)
 	}
 
-	resp, err = do("PUT", "/galene-api/v0/.groups/test/.wildcard-user",
+	resp, err = do("PUT", "/owly-api/v0/.groups/test/.wildcard-user",
 		"application/json", "", "*",
 		`{"permissions": "present"}`)
 	if err != nil || resp.StatusCode != http.StatusCreated {
 		t.Errorf("Create wildcard user: %v %v", err, resp.StatusCode)
 	}
 
-	err = getJSON("/galene-api/v0/.groups/test/.wildcard-user", &user)
+	err = getJSON("/owly-api/v0/.groups/test/.wildcard-user", &user)
 	if err != nil {
 		t.Errorf("Get wildcard user: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestApi(t *testing.T) {
 		t.Errorf("Got %v, expected %v", desc.WildcardUser, user)
 	}
 
-	resp, err = do("DELETE", "/galene-api/v0/.groups/test/.wildcard-user",
+	resp, err = do("DELETE", "/owly-api/v0/.groups/test/.wildcard-user",
 		"", "", "", "")
 	if err != nil || resp.StatusCode != http.StatusNoContent {
 		t.Errorf("Delete wildcard user: %v %v", err, resp.StatusCode)
@@ -300,33 +300,33 @@ func TestApi(t *testing.T) {
 		t.Errorf("Keys: %v", len(desc.AuthKeys))
 	}
 
-	resp, err = do("POST", "/galene-api/v0/.groups/test/.tokens/",
+	resp, err = do("POST", "/owly-api/v0/.groups/test/.tokens/",
 		"application/json", "", "", `{"group":"bad"}`)
 	if err != nil || resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("Create token (bad group): %v %v", err, resp.StatusCode)
 	}
 
-	resp, err = do("POST", "/galene-api/v0/.groups/test/.tokens/",
+	resp, err = do("POST", "/owly-api/v0/.groups/test/.tokens/",
 		"application/json", "", "", "{}")
 	if err != nil || resp.StatusCode != http.StatusCreated {
 		t.Errorf("Create token: %v %v", err, resp.StatusCode)
 	}
 
-	resp, err = do("POST", "/galene-api/v0/.groups/.tokens/",
+	resp, err = do("POST", "/owly-api/v0/.groups/.tokens/",
 		"application/json", "", "", "{\"includeSubgroups\": true}")
 	if err != nil || resp.StatusCode != http.StatusCreated {
 		t.Errorf("Create global token: %v %v", err, resp.StatusCode)
 	}
 
 	var toknames []string
-	err = getJSON("/galene-api/v0/.groups/test/.tokens/", &toknames)
+	err = getJSON("/owly-api/v0/.groups/test/.tokens/", &toknames)
 	if err != nil || len(toknames) != 1 {
 		t.Errorf("Get tokens: %v %v", err, toknames)
 	}
 	tokname := toknames[0]
 
 	var globalToknames []string
-	err = getJSON("/galene-api/v0/.groups/test/.tokens/", &globalToknames)
+	err = getJSON("/owly-api/v0/.groups/test/.tokens/", &globalToknames)
 	if err != nil || len(globalToknames) != 1 {
 		t.Errorf("Get global tokens: %v %v", err, globalToknames)
 	}
@@ -336,7 +336,7 @@ func TestApi(t *testing.T) {
 		t.Errorf("token.List: %v %v", tokens, err)
 	}
 
-	tokenpath := "/galene-api/v0/.groups/test/.tokens/" + tokname
+	tokenpath := "/owly-api/v0/.groups/test/.tokens/" + tokname
 	var tok token.Stateful
 	err = getJSON(tokenpath, &tok)
 	if err != nil {
@@ -375,13 +375,13 @@ func TestApi(t *testing.T) {
 		t.Errorf("Got %v, expected %v (%v)", tok.Expires, e, err)
 	}
 
-	resp, err = do("PUT", "/galene-api/v0/.groups/test2",
+	resp, err = do("PUT", "/owly-api/v0/.groups/test2",
 		"application/json", "", "*", "{}")
 	if err != nil || resp.StatusCode != http.StatusCreated {
 		t.Errorf("Create test2: %v %v", err, resp.StatusCode)
 	}
 
-	tokenpath2 := "/galene-api/v0/.groups/test2/.tokens/" + tokname
+	tokenpath2 := "/owly-api/v0/.groups/test2/.tokens/" + tokname
 	resp, err = do("GET", tokenpath2, "", "", "", "")
 	if err != nil || resp.StatusCode != http.StatusNotFound {
 		t.Errorf("Get token in bad group: %v %v", err, resp.StatusCode)
@@ -402,13 +402,13 @@ func TestApi(t *testing.T) {
 		t.Errorf("Token list: %v %v", tokens, err)
 	}
 
-	resp, err = do("DELETE", "/galene-api/v0/.groups/test/.keys",
+	resp, err = do("DELETE", "/owly-api/v0/.groups/test/.keys",
 		"", "", "", "")
 	if err != nil || resp.StatusCode != http.StatusNoContent {
 		t.Errorf("Delete keys: %v %v", err, resp.StatusCode)
 	}
 
-	resp, err = do("DELETE", "/galene-api/v0/.groups/test/",
+	resp, err = do("DELETE", "/owly-api/v0/.groups/test/",
 		"", "", "", "")
 	if err != nil || resp.StatusCode != http.StatusNoContent {
 		t.Errorf("Delete group: %v %v", err, resp.StatusCode)
@@ -430,7 +430,7 @@ func TestApiBadAuth(t *testing.T) {
 
 	do := func(method, path string) {
 		req, err := http.NewRequest(method,
-			"http://localhost:1234"+path,
+			testServerURL+path,
 			nil)
 		if err != nil {
 			t.Errorf("New request: %v", err)
@@ -447,9 +447,9 @@ func TestApiBadAuth(t *testing.T) {
 		}
 	}
 
-	do("GET", "/galene-api/v0/.stats")
-	do("GET", "/galene-api/v0/.groups/")
-	do("PUT", "/galene-api/v0/.groups/test/")
+	do("GET", "/owly-api/v0/.stats")
+	do("GET", "/owly-api/v0/.groups/")
+	do("PUT", "/owly-api/v0/.groups/test/")
 
 	f, err := os.Create(filepath.Join(group.Directory, "test.json"))
 	if err != nil {
@@ -460,20 +460,20 @@ func TestApiBadAuth(t *testing.T) {
         }\n`)
 	f.Close()
 
-	do("PUT", "/galene-api/v0/.groups/test/")
-	do("DELETE", "/galene-api/v0/.groups/test/")
-	do("GET", "/galene-api/v0/.groups/test/.users/")
-	do("GET", "/galene-api/v0/.groups/test/.users/jch")
-	do("GET", "/galene-api/v0/.groups/test/.users/jch")
-	do("PUT", "/galene-api/v0/.groups/test/.users/jch")
-	do("DELETE", "/galene-api/v0/.groups/test/.users/jch")
-	do("GET", "/galene-api/v0/.groups/test/.users/not-jch")
-	do("PUT", "/galene-api/v0/.groups/test/.users/not-jch")
-	do("PUT", "/galene-api/v0/.groups/test/.users/jch/.password")
-	do("POST", "/galene-api/v0/.groups/test/.users/jch/.password")
-	do("GET", "/galene-api/v0/.groups/test/.tokens/")
-	do("POST", "/galene-api/v0/.groups/test/.tokens/")
-	do("GET", "/galene-api/v0/.groups/test/.tokens/token")
-	do("PUT", "/galene-api/v0/.groups/test/.tokens/token")
-	do("DELETE", "/galene-api/v0/.groups/test/.tokens/token")
+	do("PUT", "/owly-api/v0/.groups/test/")
+	do("DELETE", "/owly-api/v0/.groups/test/")
+	do("GET", "/owly-api/v0/.groups/test/.users/")
+	do("GET", "/owly-api/v0/.groups/test/.users/jch")
+	do("GET", "/owly-api/v0/.groups/test/.users/jch")
+	do("PUT", "/owly-api/v0/.groups/test/.users/jch")
+	do("DELETE", "/owly-api/v0/.groups/test/.users/jch")
+	do("GET", "/owly-api/v0/.groups/test/.users/not-jch")
+	do("PUT", "/owly-api/v0/.groups/test/.users/not-jch")
+	do("PUT", "/owly-api/v0/.groups/test/.users/jch/.password")
+	do("POST", "/owly-api/v0/.groups/test/.users/jch/.password")
+	do("GET", "/owly-api/v0/.groups/test/.tokens/")
+	do("POST", "/owly-api/v0/.groups/test/.tokens/")
+	do("GET", "/owly-api/v0/.groups/test/.tokens/token")
+	do("PUT", "/owly-api/v0/.groups/test/.tokens/token")
+	do("DELETE", "/owly-api/v0/.groups/test/.tokens/token")
 }

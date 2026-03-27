@@ -10,9 +10,9 @@ logs/
 recordings/
 tmp-*.log
 *~
-/galene
-/galene.exe
-/galenectl/galenectl
+/owly
+/owly.exe
+/owlyctl/owlyctl
 /data
 /groups/**/*.json
 /static/**/*.d.ts

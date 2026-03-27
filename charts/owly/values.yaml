@@ -32,13 +32,33 @@ tolerations: []
 affinity: {}
 
 env:
-  GALENE_HTTP: ":8443"
-  GALENE_INSECURE: "true"
-  GALENE_GROUPS: /opt/galene/groups
-  GALENE_RECORDINGS: /opt/galene/recordings
-  GALENE_DATA: /opt/galene/data
-  GALENE_RELAY_ONLY: ""
-  GALENE_TURN: ""
+  OWLY_HTTP: ":8443"
+  OWLY_INSECURE: "true"
+  OWLY_GROUPS: /opt/owly/groups
+  OWLY_RECORDINGS: /opt/owly/recordings
+  OWLY_DATA: /opt/owly/data
+  OWLY_RELAY_ONLY: ""
+  OWLY_TURN: ""
+
+probes:
+  liveness:
+    enabled: true
+    path: /api/health
+    scheme: HTTP
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+    successThreshold: 1
+  readiness:
+    enabled: true
+    path: /api/health
+    scheme: HTTP
+    initialDelaySeconds: 3
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+    successThreshold: 1
 
 persistence:
   data:

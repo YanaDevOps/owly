@@ -31,14 +31,42 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+          {{- with .Values.probes.liveness }}
+          {{- if .enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .path }}
+              port: {{ $.Values.service.targetPort }}
+              scheme: {{ .scheme }}
+            initialDelaySeconds: {{ .initialDelaySeconds }}
+            periodSeconds: {{ .periodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+            successThreshold: {{ .successThreshold }}
+          {{- end }}
+          {{- end }}
+          {{- with .Values.probes.readiness }}
+          {{- if .enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .path }}
+              port: {{ $.Values.service.targetPort }}
+              scheme: {{ .scheme }}
+            initialDelaySeconds: {{ .initialDelaySeconds }}
+            periodSeconds: {{ .periodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+            successThreshold: {{ .successThreshold }}
+          {{- end }}
+          {{- end }}
           volumeMounts:
             - name: data
-              mountPath: /opt/galene/data
+              mountPath: /opt/owly/data
             - name: recordings
-              mountPath: /opt/galene/recordings
+              mountPath: /opt/owly/recordings
             {{- if .Values.sampleGroup.enabled }}
             - name: groups
-              mountPath: /opt/galene/groups
+              mountPath: /opt/owly/groups
               readOnly: true
             {{- end }}
           resources:

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 yanix.
+// Copyright (c) 2026 Yanix.
 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -18,7 +18,7 @@
 // THE SOFTWARE.
 
 'use strict';
-/* global rememberPersistentClientUsername, ensurePersistentClientIdForUsername */
+/* global rememberPersistentClientUsername, ensurePersistentClientIdForUsername, getPersistentClientTabKey */
 
 /* global ServerConnection */
 
@@ -110,12 +110,23 @@ let sharedScreenZoomMediaLocalId = null;
 const participantPresence = new Map();
 const recentlyDeletedConferenceUsers = new Map();
 const participantOfflineGracePeriod = 2000;
+const participantReconnectPlaceholderGracePeriod = 15000;
 const participantConnectionPoorGracePeriod = 5000;
+const conferenceConnectingPlaceholderGracePeriod = 2000;
+const refreshRejoinStateStoragePrefix = 'owly_refresh_rejoin_v1';
+const refreshRejoinStateTtlMs = 60000;
+const mobileViewportRefreshDelayMs = 40;
+const mediaTransportRecoveryDelayMs = 4000;
+const mediaTransportRecoveryFailedDelayMs = 1500;
+const mediaTransportRecoveryCooldownMs = 15000;
+const mediaTransportRecoveryRepublishCooldownMs = 30000;
 const streamUiHealth = new Map();
 const mobilePreviewDragThreshold = 10;
 const mobilePreviewCollapseThreshold = 28;
 const mobilePreviewHandleWidth = 20;
 const mobilePreviewBoundsPadding = 12;
+let pageTransitionInProgress = false;
+let pageTransitionCloseHandled = false;
 
 /**
  * Whether login permissions have been granted. Intentionally unused.
@@ -167,9 +178,9 @@ let fallbackSettings = null;
 let audioEnabled = false;
 let audioOutputWarningShown = false;
 
-const debugStorageKeys = ['owly_debug', 'galene_debug'];
+const debugStorageKeys = ['owly_debug'];
 const usernameStorageWriteKey = 'owly_username';
-const usernameStorageReadKeys = ['owly_username', 'galene_username'];
+const usernameStorageReadKeys = [usernameStorageWriteKey];
 
 function getStoredFlag(keys) {
     for (const key of keys) {
@@ -192,7 +203,6 @@ function setStoredUsername(username) {
     try {
         if (username) {
             localStorage.setItem(usernameStorageWriteKey, username);
-            localStorage.removeItem('galene_username');
         } else {
             localStorage.removeItem(usernameStorageWriteKey);
         }
@@ -295,10 +305,103 @@ function getReconnectCredentials(username) {
     };
 }
 
+function normaliseReconnectAuthState(state) {
+    if (!state || !Object.prototype.hasOwnProperty.call(state, 'credentials'))
+        return null;
+    return {
+        group: state.group || group || '',
+        username: typeof state.username === 'string' ? state.username : '',
+        credentials: cloneJoinCredentials(state.credentials),
+        pwAuth: Object.prototype.hasOwnProperty.call(state, 'pwAuth') ?
+            !!state.pwAuth :
+            typeof state.credentials === 'string',
+    };
+}
+
+function getRefreshRejoinStateStorageKey(groupName = group) {
+    if (!groupName || typeof getPersistentClientTabKey !== 'function')
+        return '';
+    const tabKey = getPersistentClientTabKey();
+    if (!tabKey)
+        return '';
+    return `${refreshRejoinStateStoragePrefix}:${tabKey}:${groupName}`;
+}
+
+function persistRefreshRejoinState(state = reconnectState) {
+    const next = normaliseReconnectAuthState(state);
+    const storageKey = getRefreshRejoinStateStorageKey(next ? next.group : group);
+    if (!storageKey)
+        return;
+    try {
+        if (!next || !next.group) {
+            window.localStorage.removeItem(storageKey);
+            return;
+        }
+        window.localStorage.setItem(storageKey, JSON.stringify({
+            group: next.group,
+            username: next.username,
+            credentials: next.credentials,
+            pwAuth: next.pwAuth,
+            savedAt: Date.now(),
+        }));
+    } catch (e) {
+        console.warn('Failed to persist refresh rejoin state:', e);
+    }
+}
+
+function loadRefreshRejoinState(groupName = group) {
+    const storageKey = getRefreshRejoinStateStorageKey(groupName);
+    if (!storageKey)
+        return null;
+    try {
+        const raw = window.localStorage.getItem(storageKey);
+        if (!raw)
+            return null;
+        const saved = JSON.parse(raw);
+        const savedAt = Number(saved && saved.savedAt);
+        if (!saved || saved.group !== groupName ||
+            !Number.isFinite(savedAt) ||
+            (Date.now() - savedAt) > refreshRejoinStateTtlMs) {
+            window.localStorage.removeItem(storageKey);
+            return null;
+        }
+        return normaliseReconnectAuthState(saved);
+    } catch (e) {
+        console.warn('Failed to restore refresh rejoin state:', e);
+        try {
+            window.localStorage.removeItem(storageKey);
+        } catch (_e) {
+            // Ignore cleanup failures.
+        }
+        return null;
+    }
+}
+
+function rememberReconnectAuthState(state, persistRefresh = true) {
+    const next = normaliseReconnectAuthState(state);
+    reconnectState = next;
+    loginPassword = next && next.pwAuth && typeof next.credentials === 'string' ?
+        next.credentials :
+        null;
+    if (persistRefresh)
+        persistRefreshRejoinState(next);
+}
+
+function restoreRefreshRejoinState(groupName = group) {
+    const saved = loadRefreshRejoinState(groupName);
+    if (!saved)
+        return false;
+    reconnectPending = true;
+    rememberReconnectAuthState(saved, false);
+    pwAuth = saved.pwAuth;
+    return true;
+}
+
 function clearReconnectAuthState() {
     reconnectPending = false;
     reconnectState = null;
     loginPassword = null;
+    persistRefreshRejoinState(null);
     setVisibility('sharelink-section', false);
 }
 
@@ -722,14 +825,18 @@ function shouldRelayoutForPanelToggle() {
     return !isMobileBurgerLayout();
 }
 
+function isMobilePerformanceProfile(profile = getPerformanceProfile()) {
+    return profile === 'mobile' || profile === 'low-power-mobile';
+}
+
 function getDefaultSendSetting() {
-    return 'unlimited';
+    return 'normal';
 }
 
 function getDefaultSimulcastSetting() {
     if (isFirefox())
         return 'off';
-    return getPerformanceProfile() === 'desktop' ? 'on' : 'auto';
+    return 'auto';
 }
 
 function applyPerformanceProfileChrome() {
@@ -788,7 +895,58 @@ function shouldCollectUpstreamStats() {
 }
 
 function getFilterFrameRate(baseFrameRate) {
-    return baseFrameRate || 30;
+    const target = baseFrameRate || 30;
+    switch (getPerformanceProfile()) {
+    case 'mobile':
+        return Math.min(target, 12);
+    case 'low-power-mobile':
+        return Math.min(target, 10);
+    default:
+        return target;
+    }
+}
+
+function isExpensiveFilterDefinition(definition) {
+    return definition === filters['background-blur'] ||
+        definition === filters['background-replace'];
+}
+
+function streamHasExpensiveFilter(c) {
+    if (!c || !c.userdata)
+        return false;
+    return isExpensiveFilterDefinition(c.userdata.filterDefinition) ||
+        isExpensiveFilterDefinition(c.userdata.activeFilterDefinition);
+}
+
+function getSelectedMaxVideoThroughput() {
+    const v = getSettings().send;
+    switch (v) {
+    case 'lowest':
+        return 150000;
+    case 'low':
+        return 300000;
+    case 'normal':
+        return legacyNormalVideoRate;
+    case 'unlimited':
+        return null;
+    default:
+        console.error('Unknown video quality', v);
+        return legacyNormalVideoRate;
+    }
+}
+
+function getMobileProfileVideoThroughputCap(c) {
+    void c;
+    return null;
+}
+
+function getMaxVideoThroughput(c) {
+    void c;
+    return getSelectedMaxVideoThroughput();
+}
+
+function shouldAllowCpuSegmentationFallback() {
+    return !isMobilePerformanceProfile();
 }
 
 function scheduleIdleTask(fn, timeout = 300) {
@@ -834,8 +992,10 @@ function getOrCreateParticipantState(id) {
             username: '',
             userinfo: null,
             offline: false,
+            transientDisconnect: false,
             offlineSince: null,
             removeTimer: null,
+            placeholderConnectingSince: 0,
             connectionStatus: 'online',
             speaking: false,
             hasAudio: false,
@@ -1155,6 +1315,17 @@ function removeUserRow(id, removeState) {
     updateParticipantsHeader();
 }
 
+function removeParticipantImmediately(id, options = {}) {
+    const {markDeleted = true, removeConferenceArtifacts = true} = options;
+    if (markDeleted)
+        markConferenceUserDeleted(id);
+    else
+        clearConferenceUserDeleted(id);
+    if (removeConferenceArtifacts)
+        removeConferenceArtifactsForUser(id);
+    removeUserRow(id, true);
+}
+
 function renderParticipantRow(id) {
     const state = participantPresence.get(id);
     const liveUser =
@@ -1210,7 +1381,9 @@ function refreshParticipantPresence(id, userinfo) {
         state.userinfo = snapshotUserInfo(liveUser);
         state.username = liveUser.username || state.username || '(anon)';
         state.offline = false;
+        state.transientDisconnect = false;
         state.offlineSince = null;
+        state.placeholderConnectingSince = 0;
         clearParticipantRemovalTimer(state);
     } else if (!state.userinfo) {
         return;
@@ -1222,7 +1395,11 @@ function refreshParticipantPresence(id, userinfo) {
     renderParticipantRow(id);
 }
 
-function markParticipantOffline(id) {
+function markParticipantOffline(
+    id,
+    removeDelayMs = participantOfflineGracePeriod,
+    transientDisconnect = false,
+) {
     const state = participantPresence.get(id);
     if (!state || !state.userinfo) {
         removeUserRow(id, true);
@@ -1231,14 +1408,21 @@ function markParticipantOffline(id) {
 
     clearParticipantRemovalTimer(state);
     state.offline = true;
+    state.transientDisconnect = transientDisconnect;
     state.offlineSince = Date.now();
     state.connectionStatus = 'offline';
     state.speaking = false;
+    state.placeholderConnectingSince = 0;
     renderParticipantRow(id);
 
     state.removeTimer = setTimeout(() => {
-        removeUserRow(id, true);
-    }, participantOfflineGracePeriod);
+        removeParticipantImmediately(id, {
+            markDeleted: transientDisconnect,
+            removeConferenceArtifacts: transientDisconnect,
+        });
+        scheduleConferenceLayout();
+        updateStageBadge();
+    }, removeDelayMs);
 }
 
 function getPeerElements() {
@@ -1802,6 +1986,22 @@ function getConferenceParticipants() {
         });
     });
     participants.push(...streamEntries.values());
+    for (const id of streamEntries.keys())
+        seen.add(id);
+
+    for (const [id, state] of participantPresence) {
+        if (!state || !state.userinfo || !state.transientDisconnect ||
+            seen.has(id) || isConferenceUserRecentlyDeleted(id)) {
+            continue;
+        }
+        participants.push({
+            id: id,
+            username: state.username || state.userinfo.username || id,
+            userinfo: state.userinfo,
+            local: !!(serverConnection && id === serverConnection.id),
+        });
+        seen.add(id);
+    }
 
     return participants.sort((a, b) => {
         if (a.local !== b.local)
@@ -1815,6 +2015,12 @@ function getConferencePlaceholderId(userId) {
 }
 
 function getConferencePlaceholderStatus(participant) {
+    const state = participant && participant.id ?
+        participantPresence.get(participant.id) :
+        null;
+    if (state && state.transientDisconnect)
+        return 'Connecting';
+
     const userinfo = participant && participant.userinfo;
     const streams = (userinfo && userinfo.streams) || {};
     const camera = streams.camera;
@@ -1833,6 +2039,36 @@ function getConferencePlaceholderStatus(participant) {
             return 'Audio only';
     }
     return 'Connecting';
+}
+
+function shouldRenderConferencePlaceholder(participant) {
+    if (!participant)
+        return false;
+
+    const state = getOrCreateParticipantState(participant.id);
+    const status = getConferencePlaceholderStatus(participant);
+    const transientDisconnect = !!(state && state.transientDisconnect);
+
+    if (participant.local || status !== 'Connecting') {
+        state.placeholderConnectingSince = 0;
+        return true;
+    }
+
+    if (getUserStreams(participant.id).some(c => {
+        return !!(c && c.stream && hasVideoTrack(c.stream));
+    })) {
+        state.placeholderConnectingSince = 0;
+        return false;
+    }
+
+    const now = Date.now();
+    if (!state.placeholderConnectingSince)
+        state.placeholderConnectingSince = now;
+
+    return (now - state.placeholderConnectingSince) <=
+        (transientDisconnect ?
+            participantReconnectPlaceholderGracePeriod :
+            conferenceConnectingPlaceholderGracePeriod);
 }
 
 function ensureConferencePlaceholderPeer(participant) {
@@ -2731,10 +2967,15 @@ function getConferenceLayoutPeers() {
     for (const participant of getConferenceParticipants()) {
         const existingPeer = getConferenceParticipantCameraPeer(participant);
         if (existingPeer) {
+            const state = participantPresence.get(participant.id);
+            if (state)
+                state.placeholderConnectingSince = 0;
             ensureConferencePeerDisplay(existingPeer);
             peers.push(existingPeer);
             continue;
         }
+        if (!shouldRenderConferencePlaceholder(participant))
+            continue;
         const placeholder = ensureConferencePlaceholderPeer(participant);
         placeholderIds.add(placeholder.id);
         peers.push(placeholder);
@@ -3436,6 +3677,8 @@ let conferenceLayoutKey = '';
 let lastViewportHeight = 0;
 let lastViewportWidth = 0;
 let viewportRefreshFrame = null;
+let viewportHeightRefreshFrame = null;
+let viewportHeightRefreshTimer = null;
 
 function getLayoutChildrenKey(container) {
     if (!container)
@@ -3508,6 +3751,37 @@ function scheduleViewportLayoutRefresh() {
         applyMobilePreviewState(getSelfPreviewSlot(), true);
         scheduleReconsiderDownRate();
     });
+}
+
+function isViewportInteractiveTarget(target) {
+    return !!(
+        target instanceof HTMLElement &&
+        target.matches('input, textarea, select, [contenteditable="true"]')
+    );
+}
+
+function scheduleViewportHeightRefresh(delay = 0) {
+    if (viewportHeightRefreshTimer) {
+        clearTimeout(viewportHeightRefreshTimer);
+        viewportHeightRefreshTimer = null;
+    }
+    if (viewportHeightRefreshFrame) {
+        cancelAnimationFrame(viewportHeightRefreshFrame);
+        viewportHeightRefreshFrame = null;
+    }
+
+    const flush = () => {
+        viewportHeightRefreshTimer = null;
+        viewportHeightRefreshFrame = requestAnimationFrame(() => {
+            viewportHeightRefreshFrame = null;
+            setViewportHeight();
+        });
+    };
+
+    if (delay > 0)
+        viewportHeightRefreshTimer = setTimeout(flush, delay);
+    else
+        flush();
 }
 
 function setChatOpen(open) {
@@ -3703,22 +3977,11 @@ function setConnected(connected) {
 async function gotConnected() {
     if (this !== serverConnection)
         return;
+    pageTransitionInProgress = false;
+    pageTransitionCloseHandled = false;
     setConnected(true);
     clearReconnectCooldown();
     try {
-        if (reconnectPending && reconnectState) {
-            const state = reconnectState;
-            reconnectPending = false;
-            presentRequested = 'both';
-            updateSettings({cameraOff: false});
-            setLocalCameraOff(false, false);
-            await serverConnection.join(
-                group,
-                state.username,
-                cloneJoinCredentials(state.credentials),
-            );
-            return;
-        }
         reconnectPending = false;
         await join();
     } catch (e) {
@@ -3787,20 +4050,8 @@ async function join() {
             probingState = null;
         }
         const pw = getInputElement('password').value;
-        const cachedReconnect = pw ? null : getReconnectCredentials(username);
         getInputElement('password').value = '';
-        if (cachedReconnect) {
-            username = cachedReconnect.username;
-            credentials = cachedReconnect.credentials;
-            pwAuth = typeof credentials === 'string';
-            if (typeof credentials === 'string')
-                loginPassword = credentials;
-            console.log('[Connection] Reusing in-memory reconnect credentials', {
-                username: username,
-                authType: pwAuth ? 'password' :
-                    (credentials && credentials.type) || 'unknown',
-            });
-        } else if (groupStatus.authServer) {
+        if (groupStatus.authServer) {
             pwAuth = false;
             credentials = {
                 type: 'authServer',
@@ -3820,10 +4071,6 @@ async function join() {
         setStoredUsername(username);
 
     try {
-        reconnectState = {
-            username,
-            credentials: cloneJoinCredentials(credentials),
-        };
         await serverConnection.join(group, username, credentials, {
             muted: !!getSettings().localMute,
         });
@@ -3835,13 +4082,8 @@ async function join() {
         }
         displayError(e);
         reconnectPending = false;
-        if (isAuthorisationFailure(e))
-            clearReconnectAuthState();
-        closeConnectionIfOpen(
-            serverConnection,
-            'join failed',
-            !isAuthorisationFailure(e),
-        );
+        if (serverConnection)
+            serverConnection.close('join failed');
     }
 }
 
@@ -3873,70 +4115,12 @@ function gotClose(code, reason) {
     setConnected(false);
 
     clearReconnectTimer();
-
-    // Log all disconnect reasons
-    const closeMeta = {
-        code: code,
-        reason: reason,
-        timestamp: new Date().toISOString(),
-        reconnectAttempts: reconnectAttempts,
-        clientInitiatedClose: !!this.closeRequestedByClient,
-        clientCloseReason: this.closeRequestReason || '',
-        clientCloseStackTop: this.closeRequestStack ?
-            (this.closeRequestStack.split('\n')[1] || '').trim() :
-            '',
-        lastClientError: this.lastErrorMessage || '',
-    };
-    console.log('[Connection] WebSocket closed', closeMeta);
-    console.log('[Connection] WebSocket closed JSON', JSON.stringify(closeMeta));
-
-    const willReconnect =
-        code !== 1000 &&
-        reconnectState &&
-        reconnectAttempts < reconnectMaxAttempts;
-
-    if (code !== 1000 && !willReconnect) {
-        console.warn('Socket close', code, reason);
-        displayError(`Connection closed: ${reason || 'Unknown reason'} (code ${code})`);
-    }
-
-    // Attempt reconnection on unexpected disconnects
-    if (willReconnect) {
-        const attempt = reconnectAttempts + 1;
-        const delay = getReconnectDelay(reconnectAttempts);
-        reconnectAttempts = attempt;
-        console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${reconnectMaxAttempts})...`);
-        displayWarning(
-            delay > 0 ?
-                `Connection lost. Reconnecting in ${Math.round(delay / 1000)}s (${reconnectAttempts}/${reconnectMaxAttempts})...` :
-                `Connection lost. Reconnecting now (${reconnectAttempts}/${reconnectMaxAttempts})...`,
-        );
-        reconnectTimer = setTimeout(async () => {
-            reconnectTimer = null;
-            try {
-                reconnectPending = true;
-                await serverConnect('auto');
-            } catch (e) {
-                console.error('Reconnect failed:', e);
-                reconnectPending = false;
-                // If reconnect fails due to auth error, show user-friendly message
-                if (isAuthorisationFailure(e)) {
-                    clearReconnectAuthState();
-                    displayError('Reconnection failed: Not authorized. You may need to rejoin the room.');
-                    reconnectAttempts = reconnectMaxAttempts; // Stop trying
-                } else {
-                    displayError('Reconnection failed: ' + (e.message || e));
-                }
-                closeUpMedia();
-            }
-        }, delay);
-        return;
-    }
-
-    // Close media streams when not reconnecting
     closeUpMedia();
-
     reconnectPending = false;
+
+    if (code !== 1000) {
+        console.warn('Socket close', code, reason);
+    }
     if (this.closeRequestedByClient) {
         clearReconnectAuthState();
         reconnectAttempts = 0;
@@ -3970,6 +4154,149 @@ function gotClose(code, reason) {
  * @this {ServerConnection}
  * @param {Stream} c
  */
+function getOrCreateTransportRecoveryState(c) {
+    if (!c || !c.userdata)
+        return null;
+    if (!c.userdata.transportRecovery) {
+        c.userdata.transportRecovery = {
+            timer: null,
+            step: 0,
+            lastActionAt: 0,
+            lastRepublishAt: 0,
+        };
+    }
+    return c.userdata.transportRecovery;
+}
+
+function clearTransportRecovery(c) {
+    const state = c && c.userdata && c.userdata.transportRecovery;
+    if (!state)
+        return;
+    if (state.timer) {
+        clearTimeout(state.timer);
+        state.timer = null;
+    }
+    delete c.userdata.transportRecovery;
+}
+
+function resetTransportRecovery(c) {
+    const state = getOrCreateTransportRecoveryState(c);
+    if (!state)
+        return;
+    if (state.timer) {
+        clearTimeout(state.timer);
+        state.timer = null;
+    }
+    state.step = 0;
+    state.lastActionAt = 0;
+}
+
+function runTransportRecovery(c) {
+    if (!c || !serverConnection || c.sc !== serverConnection || !c.pc)
+        return;
+
+    const state = getOrCreateTransportRecoveryState(c);
+    if (!state)
+        return;
+
+    const iceState = c.pc.iceConnectionState;
+    if (iceState === 'connected' || iceState === 'completed' || iceState === 'closed') {
+        resetTransportRecovery(c);
+        return;
+    }
+
+    const now = Date.now();
+    if (state.lastActionAt &&
+        now - state.lastActionAt < mediaTransportRecoveryCooldownMs) {
+        state.timer = setTimeout(() => {
+            state.timer = null;
+            runTransportRecovery(c);
+        }, mediaTransportRecoveryCooldownMs - (now - state.lastActionAt));
+        return;
+    }
+
+    state.lastActionAt = now;
+
+    if (state.step === 0) {
+        state.step = 1;
+        console.warn('[TransportRecovery] Restarting ICE', {
+            localId: c.localId,
+            label: c.label,
+            state: iceState,
+            direction: c.up ? 'up' : 'down',
+        });
+        try {
+            c.restartIce();
+        } catch (e) {
+            console.warn('[TransportRecovery] restartIce failed:', e);
+        }
+        state.timer = setTimeout(() => {
+            state.timer = null;
+            runTransportRecovery(c);
+        }, mediaTransportRecoveryDelayMs);
+        return;
+    }
+
+    if (c.up && c.label === 'camera' &&
+        (!state.lastRepublishAt ||
+         now - state.lastRepublishAt >= mediaTransportRecoveryRepublishCooldownMs)) {
+        state.step = 2;
+        state.lastRepublishAt = now;
+        console.warn('[TransportRecovery] Republishing camera stream', {
+            localId: c.localId,
+            state: iceState,
+        });
+        replaceCameraStream().catch(e => {
+            console.error('[TransportRecovery] Failed to republish camera:', e);
+        });
+        state.timer = setTimeout(() => {
+            state.timer = null;
+            runTransportRecovery(c);
+        }, mediaTransportRecoveryDelayMs);
+        return;
+    }
+
+    state.step = 3;
+    console.warn('[TransportRecovery] Escalating to websocket reconnect', {
+        localId: c.localId,
+        label: c.label,
+        state: iceState,
+    });
+    closeConnectionIfOpen(serverConnection, 'Media stall recovery', true);
+}
+
+function scheduleTransportRecovery(c, delay) {
+    const state = getOrCreateTransportRecoveryState(c);
+    if (!state)
+        return;
+    if (state.timer)
+        clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+        state.timer = null;
+        runTransportRecovery(c);
+    }, delay);
+}
+
+function handleTransportStatus(c, status) {
+    switch (status) {
+    case 'connected':
+    case 'completed':
+        resetTransportRecovery(c);
+        return;
+    case 'closed':
+        clearTransportRecovery(c);
+        return;
+    case 'failed':
+        scheduleTransportRecovery(c, mediaTransportRecoveryFailedDelayMs);
+        return;
+    case 'disconnected':
+        scheduleTransportRecovery(c, mediaTransportRecoveryDelayMs);
+        return;
+    default:
+        return;
+    }
+}
+
 function gotDownStream(c) {
     if (this !== serverConnection) {
         try {
@@ -3982,6 +4309,7 @@ function gotDownStream(c) {
     const isFF = isFirefox();
     debugLog('[gotDownStream] Received downstream', c.localId, 'from', c.username, 'Firefox:', isFF);
     c.onclose = function(replace) {
+        clearTransportRecovery(c);
         if (!replace) {
             delMedia(c.localId);
             refreshParticipantPresence(c.source);
@@ -4050,35 +4378,44 @@ function setViewportHeight() {
 }
 
 // On resize and orientation change, we update viewport height
-addEventListener('resize', setViewportHeight);
-addEventListener('orientationchange', setViewportHeight);
-window.visualViewport?.addEventListener('resize', setViewportHeight);
-window.visualViewport?.addEventListener('scroll', setViewportHeight);
+addEventListener('resize', () => scheduleViewportHeightRefresh());
+addEventListener('orientationchange', () => scheduleViewportHeightRefresh());
+window.visualViewport?.addEventListener('resize', () => {
+    scheduleViewportHeightRefresh(mobileViewportRefreshDelayMs);
+});
+window.visualViewport?.addEventListener('scroll', () => {
+    if (!isViewportInteractiveTarget(document.activeElement))
+        return;
+    scheduleViewportHeightRefresh(mobileViewportRefreshDelayMs);
+});
 document.addEventListener('focusin', e => {
-    if (!(e.target instanceof HTMLElement))
+    if (!isViewportInteractiveTarget(e.target))
         return;
-    if (!e.target.matches('input, textarea, select, [contenteditable="true"]'))
-        return;
-    requestAnimationFrame(() => setViewportHeight());
+    scheduleViewportHeightRefresh();
 }, true);
 document.addEventListener('focusout', e => {
-    if (!(e.target instanceof HTMLElement))
+    if (!isViewportInteractiveTarget(e.target))
         return;
-    if (!e.target.matches('input, textarea, select, [contenteditable="true"]'))
-        return;
-    setTimeout(() => setViewportHeight(), 80);
+    scheduleViewportHeightRefresh(80);
 }, true);
 document.addEventListener('visibilitychange', () => {
     const paused = document.visibilityState !== 'visible';
     setFiltersPaused(paused);
     setActivityDetectionPaused(paused);
-    if (!paused)
+    if (!paused) {
+        scheduleViewportHeightRefresh(mobileViewportRefreshDelayMs);
         scheduleViewportLayoutRefresh();
+    }
 });
-addEventListener('pagehide', () => {
+
+function beginPageTransitionDisconnect(event) {
     setFiltersPaused(true);
     setActivityDetectionPaused(true);
-});
+    void event;
+}
+
+addEventListener('pagehide', beginPageTransitionDisconnect);
+addEventListener('beforeunload', beginPageTransitionDisconnect);
 
 getButtonElement('presentbutton').onclick = async function(e) {
     e.preventDefault();
@@ -4278,10 +4615,6 @@ function buildVideoConstraints(settings) {
     } else {
         video.aspectRatio = {ideal: 4 / 3};
     }
-
-    const maxFrameRate = getAdaptiveMaxFrameRate();
-    if (maxFrameRate > 0)
-        video.frameRate = {ideal: maxFrameRate, max: maxFrameRate};
 
     return video;
 }
@@ -4566,28 +4899,6 @@ getSelectElement('filterselect').onchange = async function(_e) {
         }
     }
 };
-
-/**
- * Returns the desired max video throughput depending on the settings.
- *
- * @returns {number}
- */
-function getMaxVideoThroughput() {
-    const v = getSettings().send;
-    switch (v) {
-    case 'lowest':
-        return 150000;
-    case 'low':
-        return 300000;
-    case 'normal':
-        return 1500000;
-    case 'unlimited':
-        return null;
-    default:
-        console.error('Unknown video quality', v);
-        return 1500000;
-    }
-}
 
 getSelectElement('sendselect').onchange = async function(_e) {
     if (!(this instanceof HTMLSelectElement))
@@ -4923,34 +5234,114 @@ function analyseUpstreamStats(stats) {
     return summary;
 }
 
-function gotUpStats(stats) {
-    const c = this;
-    const summary = analyseUpstreamStats(stats);
-    const filter = c.userdata && c.userdata.filter;
+function getPressureFallbackVideoRate() {
+    return getPerformanceProfile() === 'low-power-mobile' ?
+        lowPowerMobilePressureFallbackVideoRate :
+        mobilePressureFallbackVideoRate;
+}
 
-    if (filter instanceof Filter) {
-        if (summary.cpuLimited || summary.lowFrameRate) {
-            filter.userdata.statsPressureCount =
-                (filter.userdata.statsPressureCount || 0) + 1;
-            if (filter.userdata.statsPressureCount >= 2) {
-                console.warn('[FilterPerformance] Disabling active effect', {
-                    localId: c.localId,
-                    filter: filter.definition && filter.definition.description,
-                    bitrate: summary.bitrate,
-                    cpuLimited: summary.cpuLimited,
-                    lowFrameRate: summary.lowFrameRate,
-                });
-                fallbackFilterForPerformance(filter).catch(e => {
-                    console.error('[FilterPerformance] Failed to disable filter:', e);
-                });
-            }
-        } else {
-            filter.userdata.statsPressureCount = 0;
+function isMobileCameraStream(c) {
+    return !!(
+        c &&
+        c.up &&
+        c.label === 'camera' &&
+        isMobilePerformanceProfile()
+    );
+}
+
+function getOrCreateStreamPressureState(c) {
+    if (!c || !c.userdata)
+        return null;
+    if (!c.userdata.pressureState) {
+        c.userdata.pressureState = {
+            pressureCount: 0,
+            healthyCount: 0,
+            lastRepublishAt: 0,
+        };
+    }
+    return c.userdata.pressureState;
+}
+
+function refreshStreamSendParameters(c) {
+    if (!c || !c.up)
+        return;
+    if (c.userdata.sendParametersRefreshPending)
+        return;
+    c.userdata.sendParametersRefreshPending = true;
+    Promise.resolve().then(async () => {
+        try {
+            await setSendParameters(
+                c,
+                getMaxVideoThroughput(c),
+                c.label !== 'screenshare' && doSimulcast(),
+            );
+        } catch (e) {
+            console.warn('[SendParameters] Failed to refresh stream parameters:', e);
+        } finally {
+            if (c.userdata)
+                c.userdata.sendParametersRefreshPending = false;
         }
+    });
+}
+
+function updateMobilePressurePolicy(c, summary) {
+    if (!isMobileCameraStream(c))
+        return;
+
+    const pressureState = getOrCreateStreamPressureState(c);
+    if (!pressureState)
+        return;
+
+    const underPressure = summary.cpuLimited || summary.lowFrameRate;
+    if (underPressure) {
+        pressureState.pressureCount++;
+        pressureState.healthyCount = 0;
+        const fallbackRate = getPressureFallbackVideoRate();
+        if (pressureState.pressureCount >= 2 &&
+            c.userdata.pressureBitrateCap !== fallbackRate) {
+            c.userdata.pressureBitrateCap = fallbackRate;
+            console.warn('[MobilePressure] Applying fallback bitrate cap', {
+                localId: c.localId,
+                bitrate: summary.bitrate,
+                fallbackRate,
+                cpuLimited: summary.cpuLimited,
+                lowFrameRate: summary.lowFrameRate,
+            });
+            refreshStreamSendParameters(c);
+        }
+
+        if (pressureState.pressureCount >= 4 &&
+            (!pressureState.lastRepublishAt ||
+             Date.now() - pressureState.lastRepublishAt >=
+                mediaTransportRecoveryRepublishCooldownMs)) {
+            pressureState.lastRepublishAt = Date.now();
+            console.warn('[MobilePressure] Republish camera after repeated pressure', {
+                localId: c.localId,
+                bitrate: summary.bitrate,
+                cpuLimited: summary.cpuLimited,
+                lowFrameRate: summary.lowFrameRate,
+            });
+            replaceCameraStream().catch(e => {
+                console.error('[MobilePressure] Failed to republish camera:', e);
+            });
+        }
+        return;
     }
 
-    // Don't overwrite the username label with bitrate stats
-    // The label now shows the username instead
+    pressureState.pressureCount = 0;
+    pressureState.healthyCount++;
+    if (typeof c.userdata.pressureBitrateCap === 'number' &&
+        pressureState.healthyCount >= 3) {
+        delete c.userdata.pressureBitrateCap;
+        console.log('[MobilePressure] Restoring normal bitrate cap', {
+            localId: c.localId,
+        });
+        refreshStreamSendParameters(c);
+    }
+}
+
+function gotUpStats(stats) {
+    void stats;
 }
 
 /**
@@ -5222,12 +5613,13 @@ let reconsiderParametersTimer = null;
  */
 async function reconsiderSendParameters() {
     cancelReconsiderParameters();
-    const t = getMaxVideoThroughput();
+    if (!serverConnection)
+        return;
     const s = doSimulcast();
     const promises = [];
     for (const id in serverConnection.up) {
         const c = serverConnection.up[id];
-        promises.push(setSendParameters(c, t, s));
+        promises.push(setSendParameters(c, getMaxVideoThroughput(c), s));
     }
     await Promise.all(promises);
 }
@@ -5494,6 +5886,7 @@ async function removeFilter(c) {
     c.setStream(old.inputStream);
     await old.stop();
     c.userdata.filter = null;
+    delete c.userdata.activeFilterDefinition;
 }
 
 /**
@@ -5541,6 +5934,7 @@ async function setFilter(c) {
     await filter.start();
     c.setStream(filter.outputStream);
     c.userdata.filter = filter;
+    c.userdata.activeFilterDefinition = filter.definition;
 }
 
 const SEGMENTER_MODEL_PATH = '/third-party/tasks-vision/models/selfie_segmenter.tflite';
@@ -5630,7 +6024,10 @@ async function createSegmentationWorker(filter, logPrefix, cpuWarningMessage) {
     try {
         initResult = await workerSendReceive(
             worker,
-            {model: SEGMENTER_MODEL_PATH},
+            {
+                model: SEGMENTER_MODEL_PATH,
+                allowCpuFallback: shouldAllowCpuSegmentationFallback(),
+            },
             undefined,
             {timeoutMs: INIT_WORKER_TIMEOUT_MS},
         );
@@ -5686,12 +6083,12 @@ async function restartSegmentationWorker(filter, logPrefix, cpuWarningMessage) {
  * @param {{timeoutMs?: number}} [options]
  */
 async function workerSendReceive(worker, message, transfer, options) {
-    if (worker._galeneBusy)
+    if (worker._owlyBusy)
         throw new Error("worker busy");
-    worker._galeneBusy = true;
+    worker._owlyBusy = true;
     const timeoutMs = options && options.timeoutMs ? options.timeoutMs : 30000;
-    const requestId = (worker._galeneRequestId || 0) + 1;
-    worker._galeneRequestId = requestId;
+    const requestId = (worker._owlyRequestId || 0) + 1;
+    worker._owlyRequestId = requestId;
     let timeoutId = null;
 
     const p = new Promise((resolve, reject) => {
@@ -5750,7 +6147,7 @@ async function workerSendReceive(worker, message, transfer, options) {
         worker.postMessage(payload, transfer);
         return await p;
     } finally {
-        worker._galeneBusy = false;
+        worker._owlyBusy = false;
     }
 }
 
@@ -6315,6 +6712,13 @@ function scheduleBackgroundPresetImagesLoad() {
 const unlimitedRate = 1000000000;
 const simulcastRate = 100000;
 const hqAudioRate = 128000;
+const legacyNormalVideoRate = 700000;
+const mobileUnlimitedVideoRate = 1400000;
+const lowPowerMobileUnlimitedVideoRate = 900000;
+const mobileEffectVideoRate = 900000;
+const lowPowerMobileEffectVideoRate = 600000;
+const mobilePressureFallbackVideoRate = 500000;
+const lowPowerMobilePressureFallbackVideoRate = 350000;
 
 /**
  * Decide whether we want to send simulcast.
@@ -6385,6 +6789,7 @@ async function setUpStream(c, stream) {
             c.userdata.filter instanceof Filter && c.userdata.filter.inputStream ?
                 c.userdata.filter.inputStream :
                 c.stream;
+        clearTransportRecovery(c);
 
         try {
             await removeFilter(c);
@@ -6435,7 +6840,7 @@ async function setUpStream(c, stream) {
         const encodings = [];
         const simulcast = c.label !== 'screenshare' && doSimulcast();
         if (t.kind === 'video') {
-            const bps = getMaxVideoThroughput();
+            const bps = getMaxVideoThroughput(c);
             // Firefox doesn't like us setting the RID if we're not
             // simulcasting.
             if (simulcast) {
@@ -6546,6 +6951,10 @@ async function replaceUpStreamWithStream(c, stream) {
         cn.label = c.label;
         if (c.userdata.filterDefinition)
             cn.userdata.filterDefinition = c.userdata.filterDefinition;
+        if (typeof c.userdata.pressureBitrateCap === 'number')
+            cn.userdata.pressureBitrateCap = c.userdata.pressureBitrateCap;
+        if (c.userdata.pressureState)
+            cn.userdata.pressureState = {...c.userdata.pressureState};
         if (c.userdata.onclose)
             cn.userdata.onclose = c.userdata.onclose;
         const media = /** @type{HTMLVideoElement} */
@@ -7383,6 +7792,8 @@ function registerControlHandlers(c, media, container) {
  */
 function delMedia(localId) {
     const stream = getAllStreams().find(c => c.localId === localId);
+    if (stream)
+        clearTransportRecovery(stream);
     const userId = getStreamUserId(stream);
     const peer = document.getElementById('peer-' + localId);
     if (!peer) {
@@ -7770,7 +8181,9 @@ function addUser(id, userinfo) {
     const state = getOrCreateParticipantState(id);
     clearParticipantRemovalTimer(state);
     state.offline = false;
+    state.transientDisconnect = false;
     state.offlineSince = null;
+    state.placeholderConnectingSince = 0;
     state.userinfo = snapshotUserInfo(userinfo);
     state.username = userinfo.username || state.username || '(anon)';
     ensureUserElement(id);
@@ -7801,9 +8214,20 @@ function setUserStatus(id, elt, userinfo) {
  * @param {string} id
  */
 function delUser(id) {
-    markConferenceUserDeleted(id);
+    const hasStreams = getUserStreams(id).length > 0;
     removeConferenceArtifactsForUser(id);
-    markParticipantOffline(id);
+    if (!hasStreams) {
+        removeParticipantImmediately(id, {
+            markDeleted: true,
+            removeConferenceArtifacts: false,
+        });
+        return;
+    }
+    markParticipantOffline(
+        id,
+        participantReconnectPlaceholderGracePeriod,
+        true,
+    );
 }
 
 /**
@@ -8001,8 +8425,14 @@ async function gotJoined(kind, group, perms, status, data, error, message) {
             token = null;
         }
         reconnectAttempts = 0;
-        if (reconnectState)
-            reconnectState.username = serverConnection.username || reconnectState.username || '';
+        if (reconnectState) {
+            rememberReconnectAuthState({
+                group: group,
+                username: serverConnection.username || reconnectState.username || '',
+                credentials: reconnectState.credentials,
+                pwAuth: reconnectState.pwAuth,
+            });
+        }
         if (typeof rememberPersistentClientUsername === 'function')
             rememberPersistentClientUsername(serverConnection.username || null);
         // don't discard endPoint and friends
@@ -9988,7 +10418,7 @@ function closeNav() {
  * @const {string}
  */
 const XOR_SECRET_KEY = 'owly-obfuscate-2024';
-const LEGACY_XOR_SECRET_KEY = 'galene-obfuscate-2024';
+const LEGACY_XOR_SECRET_KEY = XOR_SECRET_KEY;
 
 /**
  * XOR encodes a string with a repeating key pattern
@@ -10170,22 +10600,9 @@ async function serverConnect(trigger = 'manual') {
         return serverConnectPromise;
 
     const promise = (async () => {
-        const previousConnection = serverConnection;
-        if (previousConnection) {
-            // Prevent stale callbacks from old sockets causing duplicate reconnect loops.
-            previousConnection.onconnected = null;
-            previousConnection.onerror = null;
-            previousConnection.onpeerconnection = null;
-            previousConnection.onclose = null;
-            previousConnection.ondownstream = null;
-            previousConnection.onuser = null;
-            previousConnection.onjoined = null;
-            previousConnection.onchat = null;
-            previousConnection.onusermessage = null;
-            previousConnection.onfiletransfer = null;
-            if (previousConnection.socket)
-                previousConnection.close('Replacing stale connection');
-        }
+        void trigger;
+        if (serverConnection && serverConnection.socket)
+            serverConnection.close();
 
         const connection = new ServerConnection();
         serverConnection = connection;
@@ -10194,11 +10611,7 @@ async function serverConnect(trigger = 'manual') {
             if (this !== serverConnection)
                 return;
             console.error(e);
-            // During reconnect loops, avoid spamming duplicate error toasts:
-            // gotClose already surfaces reconnect state to the user.
-            if (reconnectPending || reconnectAttempts > 0)
-                return;
-            displayError(e);
+            displayError(e.toString ? e.toString() : e);
         };
         connection.onpeerconnection = onPeerConnection;
         connection.onclose = gotClose;
@@ -10209,22 +10622,10 @@ async function serverConnect(trigger = 'manual') {
         connection.onusermessage = gotUserMessage;
         connection.onfiletransfer = gotFileTransfer;
 
-        let url = groupStatus.endpoint;
+        let url = getWebSocketEndpointUrl(groupStatus.endpoint);
         if (!url) {
             console.warn("no endpoint in status");
-            url = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}/ws`;
         }
-
-        console.log('[Connection] Opening WebSocket', {
-            trigger: trigger,
-            url: url,
-            reconnectAttempts: reconnectAttempts,
-            reconnectPending: reconnectPending,
-            hasReconnectState: !!reconnectState,
-            filter: getSettings().filter || '',
-            send: getSettings().send,
-            simulcast: getSettings().simulcast,
-        });
 
         try {
             await connection.connect(url);
@@ -10232,11 +10633,7 @@ async function serverConnect(trigger = 'manual') {
             if (connection !== serverConnection)
                 return;
             console.error(e);
-            // Enhance error with connection context
-            if (e instanceof Error && !e.message.includes(url)) {
-                e.message = `Connection to ${url} failed: ${e.message}`;
-            }
-            displayError(e);
+            displayError(e.message ? e.message : "Couldn't connect to " + url);
         }
     })();
 
@@ -10246,6 +10643,21 @@ async function serverConnect(trigger = 'manual') {
     } finally {
         if (serverConnectPromise === promise)
             serverConnectPromise = null;
+    }
+}
+
+function getWebSocketEndpointUrl(endpoint) {
+    let url = endpoint;
+    if (!url)
+        url = `ws${location.protocol === 'https:' ? 's' : ''}://${location.host}/ws`;
+
+    try {
+        const parsed = new URL(url, location.href);
+        if (location.protocol === 'https:' && parsed.protocol === 'ws:')
+            parsed.protocol = 'wss:';
+        return parsed.toString();
+    } catch (_e) {
+        return url;
     }
 }
 
@@ -10298,7 +10710,7 @@ async function start() {
         token = parms.get('token');
 
     if (token) {
-        await serverConnect('initial');
+        await serverConnect();
     } else if (groupStatus.authPortal) {
         window.location.href = groupStatus.authPortal;
     } else {
