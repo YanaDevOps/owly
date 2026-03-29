@@ -2131,6 +2131,29 @@ function getConferencePlaceholderId(userId) {
     return `conference-placeholder-${encodeURIComponent(userId)}`;
 }
 
+function getParticipantLiveStreamSummary(id) {
+    const streams = {};
+    if (!id)
+        return streams;
+    for (const stream of getUserStreams(id)) {
+        if (!stream || !stream.label || !stream.stream)
+            continue;
+        if (!streams[stream.label]) {
+            streams[stream.label] = {
+                audio: false,
+                video: false,
+            };
+        }
+        stream.stream.getTracks().forEach(track => {
+            if (!track || track.readyState === 'ended')
+                return;
+            if (track.kind === 'audio' || track.kind === 'video')
+                streams[stream.label][track.kind] = true;
+        });
+    }
+    return streams;
+}
+
 function getConferencePlaceholderStatus(participant) {
     const state = participant && participant.id ?
         participantPresence.get(participant.id) :
@@ -2139,11 +2162,18 @@ function getConferencePlaceholderStatus(participant) {
         return 'Connecting';
 
     const userinfo = participant && participant.userinfo;
-    const streams = (userinfo && userinfo.streams) || {};
+    const streams = {};
+    if (userinfo && userinfo.streams) {
+        for (const label in userinfo.streams)
+            streams[label] = {...userinfo.streams[label]};
+    }
+    if (participant && participant.id) {
+        const liveStreams = getParticipantLiveStreamSummary(participant.id);
+        for (const label in liveStreams)
+            streams[label] = {...(streams[label] || {}), ...liveStreams[label]};
+    }
     const camera = streams.camera;
     if (camera) {
-        if (camera.video === false && camera.audio)
-            return 'Audio only';
         if (camera.video === false)
             return 'Camera off';
         if (camera.video)
@@ -2837,7 +2867,12 @@ function getNameInitials(name, fallback) {
 }
 
 function hasVideoTrack(stream) {
-    return !!(stream && stream.getTracks().some(t => t.kind === 'video'));
+    return !!(
+        stream &&
+        stream.getTracks().some(
+            t => t.kind === 'video' && t.readyState !== 'ended',
+        )
+    );
 }
 
 function isVideoStream(c) {
@@ -4454,6 +4489,161 @@ function handleTransportStatus(c, status) {
     }
 }
 
+function noteExpectedDownstreamRecovery(
+    c,
+    delay = conferenceConnectingPlaceholderGracePeriod,
+) {
+    if (!c || !c.userdata)
+        return;
+    c.userdata.expectedDownstreamRecoveryUntil = Date.now() + delay;
+}
+
+function clearExpectedDownstreamRecovery(c) {
+    if (!c || !c.userdata)
+        return;
+    delete c.userdata.expectedDownstreamRecoveryUntil;
+}
+
+function isExpectedDownstreamRecovery(c) {
+    return !!(
+        c &&
+        c.userdata &&
+        c.userdata.expectedDownstreamRecoveryUntil &&
+        c.userdata.expectedDownstreamRecoveryUntil > Date.now()
+    );
+}
+
+function clearDownstreamTrackLifecycle(c) {
+    if (!c || !c.userdata)
+        return;
+    const state = c.userdata.downstreamTrackLifecycle;
+    if (!state)
+        return;
+    if (state.stream && typeof state.stream.removeEventListener === 'function') {
+        if (state.addtrack)
+            state.stream.removeEventListener('addtrack', state.addtrack);
+        if (state.removetrack)
+            state.stream.removeEventListener('removetrack', state.removetrack);
+    }
+    if (state.trackEndHandlers) {
+        for (const [track, handler] of state.trackEndHandlers) {
+            if (track && typeof track.removeEventListener === 'function')
+                track.removeEventListener('ended', handler);
+        }
+    }
+    delete c.userdata.downstreamTrackLifecycle;
+}
+
+function bindDownstreamTrackLifecycle(c, stream) {
+    if (!c || c.up || !c.userdata)
+        return;
+
+    clearDownstreamTrackLifecycle(c);
+
+    if (!stream || typeof stream.addEventListener !== 'function')
+        return;
+
+    const trackEndHandlers = new Map();
+
+    const bindTrackEnded = track => {
+        if (!track || typeof track.addEventListener !== 'function' ||
+            trackEndHandlers.has(track)) {
+            return;
+        }
+        const onended = () => {
+            debugLog(
+                '[downstreamTrackLifecycle] track ended for',
+                c.localId,
+                track.kind,
+            );
+            noteExpectedDownstreamRecovery(c);
+            void setMedia(c, undefined, undefined, true);
+            if (c.source)
+                refreshParticipantPresence(c.source);
+        };
+        track.addEventListener('ended', onended);
+        trackEndHandlers.set(track, onended);
+    };
+
+    const unbindTrackEnded = track => {
+        if (!track)
+            return;
+        const handler = trackEndHandlers.get(track);
+        if (!handler)
+            return;
+        if (typeof track.removeEventListener === 'function')
+            track.removeEventListener('ended', handler);
+        trackEndHandlers.delete(track);
+    };
+
+    const syncTrackEndedListeners = () => {
+        const tracks =
+            typeof stream.getTracks === 'function' ? stream.getTracks() : [];
+        for (const tracked of Array.from(trackEndHandlers.keys())) {
+            if (!tracks.includes(tracked))
+                unbindTrackEnded(tracked);
+        }
+        for (const track of tracks)
+            bindTrackEnded(track);
+    };
+
+    const refresh = reason => {
+        const tracks =
+            typeof stream.getTracks === 'function' ?
+                stream.getTracks().map(track => `${track.kind}:${track.readyState}`) :
+                [];
+        debugLog(
+            '[downstreamTrackLifecycle]',
+            reason,
+            'for',
+            c.localId,
+            'tracks:',
+            tracks,
+        );
+        syncTrackEndedListeners();
+        if (hasVideoTrack(stream))
+            clearExpectedDownstreamRecovery(c);
+        else
+            noteExpectedDownstreamRecovery(c);
+        void setMedia(c, undefined, undefined, true);
+        if (c.source)
+            refreshParticipantPresence(c.source);
+    };
+
+    const onaddtrack = event => {
+        if (event && event.track)
+            bindTrackEnded(event.track);
+        refresh('addtrack');
+    };
+
+    const onremovetrack = event => {
+        if (event && event.track)
+            unbindTrackEnded(event.track);
+        refresh('removetrack');
+    };
+
+    stream.addEventListener('addtrack', onaddtrack);
+    stream.addEventListener('removetrack', onremovetrack);
+    syncTrackEndedListeners();
+
+    c.userdata.downstreamTrackLifecycle = {
+        stream,
+        addtrack: onaddtrack,
+        removetrack: onremovetrack,
+        trackEndHandlers,
+    };
+}
+
+function markParticipantStreamReconnecting(id) {
+    if (!id)
+        return;
+    const state = getOrCreateParticipantState(id);
+    state.transientDisconnect = true;
+    if (!state.placeholderConnectingSince)
+        state.placeholderConnectingSince = Date.now();
+    renderParticipantRow(id);
+}
+
 function gotDownStream(c) {
     if (this !== serverConnection) {
         try {
@@ -4467,9 +4657,14 @@ function gotDownStream(c) {
     debugLog('[gotDownStream] Received downstream', c.localId, 'from', c.username, 'Firefox:', isFF);
     c.onclose = function(replace) {
         clearTransportRecovery(c);
-        if (!replace) {
-            delMedia(c.localId);
+        clearDownstreamTrackLifecycle(c);
+        if (replace)
+            noteExpectedDownstreamRecovery(c, participantReconnectPlaceholderGracePeriod);
+        delMedia(c.localId);
+        if (c.source) {
             refreshParticipantPresence(c.source);
+            if (replace)
+                markParticipantStreamReconnecting(c.source);
         }
     };
     c.onerror = function(e) {
@@ -4487,7 +4682,10 @@ function gotDownStream(c) {
                 readyState: _track?.readyState,
             });
         }
-        setMedia(c);
+        bindDownstreamTrackLifecycle(c, _stream || c.stream);
+        if ((_stream || c.stream) && hasVideoTrack(_stream || c.stream))
+            clearExpectedDownstreamRecovery(c);
+        void setMedia(c, undefined, undefined, true);
     };
     c.onnegotiationcompleted = function() {
         debugLog('[onnegotiationcompleted] Negotiation completed for', c.localId, 'Firefox:', isFF);
@@ -4830,22 +5028,12 @@ async function stopCameraTrackInSession(c) {
         return true;
     }
 
-    videoTracks.forEach(track => {
-        try {
-            c.stream.removeTrack(track);
-        } catch (_e) {
-            // Ignore detach errors for stale tracks.
-        }
-        try {
-            track.stop();
-        } catch (_e) {
-            // Ignore stop errors.
-        }
-    });
-
     setLocalCameraOff(true, true);
-    refreshLocalCameraUi(c);
-    return true;
+    await replaceCameraStream();
+    const current = findUpMedia('camera');
+    if (current)
+        refreshLocalCameraUi(current);
+    return !!(current && !hasVideoTrack(current.stream));
 }
 
 async function startCameraTrackInSession(c) {
@@ -4857,27 +5045,12 @@ async function startCameraTrackInSession(c) {
         return true;
     }
 
-    let freshVideoStream = null;
-    try {
-        freshVideoStream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: buildVideoConstraints(getSettings()),
-        });
-    } catch (e) {
-        displayError(e);
-        return false;
-    }
-
-    const freshVideoTrack = freshVideoStream.getVideoTracks()[0] || null;
-    if (!freshVideoTrack) {
-        stopStream(freshVideoStream);
-        return false;
-    }
-
-    c.stream.addTrack(freshVideoTrack);
     setLocalCameraOff(false, true);
-    refreshLocalCameraUi(c);
-    return true;
+    await replaceCameraStream();
+    const current = findUpMedia('camera');
+    if (current)
+        refreshLocalCameraUi(current);
+    return !!(current && hasVideoTrack(current.stream));
 }
 
 getSelectElement('videoselect').onchange = function(e) {
@@ -4961,13 +5134,7 @@ document.getElementById('camerabutton').onclick = async function(e) {
     this.dataset.busy = '1';
     try {
         let ok;
-        if (local.userdata.filterDefinition) {
-            setLocalCameraOff(nextOff, true);
-            await replaceCameraStream();
-            const current = findUpMedia('camera');
-            ok = !!(current &&
-                (nextOff ? !hasVideoTrack(current.stream) : hasVideoTrack(current.stream)));
-        } else if (nextOff) {
+        if (nextOff) {
             ok = await stopCameraTrackInSession(local);
         } else {
             ok = await startCameraTrackInSession(local);
@@ -7591,6 +7758,15 @@ function sameStream(a, b) {
     return !!(a.id && b.id && a.id === b.id);
 }
 
+function getMediaTrackSignature(stream) {
+    if (!stream || typeof stream.getTracks !== 'function')
+        return '';
+    return stream.getTracks()
+        .map(track => `${track.kind}:${track.id || ''}:${track.readyState || 'live'}`)
+        .sort()
+        .join('|');
+}
+
 /**
  * setMedia adds a new media element corresponding to stream c.
  *
@@ -7600,8 +7776,11 @@ function sameStream(a, b) {
  * @param {HTMLVideoElement} [video]
  *     - the video element to add.  If null, a new element with custom
  *       controls will be created.
+ * @param {boolean} [forceReset]
+ *     - whether to force a media element rebind even if the stream object
+ *       itself hasn't changed.
  */
-async function setMedia(c, mirror, video) {
+async function setMedia(c, mirror, video, forceReset) {
     const isFF = isFirefox();
     debugLog('[setMedia] Setting media for', c.localId, 'up:', c.up, 'stream:', !!c.stream, 'tracks:', c.stream ? c.stream.getTracks().length : 0, 'Firefox:', isFF);
     let div = document.getElementById('peer-' + c.localId);
@@ -7691,10 +7870,24 @@ async function setMedia(c, mirror, video) {
         media.classList.remove('mirror');
 
     const hadMediaStream = !!(media && media.srcObject);
-    if (!video && !sameStream(
-        /** @type {MediaStream|null} */ (media.srcObject),
-        /** @type {MediaStream|null} */ (c.stream),
-    )) {
+    const previousTrackSignature =
+        c.userdata && typeof c.userdata.boundMediaTrackSignature === 'string' ?
+            c.userdata.boundMediaTrackSignature :
+            '';
+    const nextTrackSignature = getMediaTrackSignature(c.stream);
+    const shouldForceReset = !!forceReset ||
+        (!c.up && previousTrackSignature !== nextTrackSignature);
+    const shouldRebindMedia = !video && (
+        shouldForceReset ||
+        !sameStream(
+            /** @type {MediaStream|null} */ (media.srcObject),
+            /** @type {MediaStream|null} */ (c.stream),
+        )
+    );
+
+    if (shouldRebindMedia) {
+        if (shouldForceReset && media.srcObject)
+            media.srcObject = null;
         media.srcObject = c.stream;
         updatePeerAspectFromMedia(div, media, c);
         // Only call play() if we have an actual stream
@@ -7792,6 +7985,8 @@ async function setMedia(c, mirror, video) {
             }
         }
     }
+    if (c.userdata)
+        c.userdata.boundMediaTrackSignature = nextTrackSignature;
 
     let label = document.getElementById('label-' + c.localId);
     if (!label) {
@@ -7812,7 +8007,7 @@ async function setMedia(c, mirror, video) {
                 setSelfPreviewPeer(selfPreviewSlot, div);
         }
     }
-    if (createdPeer || (!hadMediaStream && !!c.stream))
+    if (createdPeer || (!hadMediaStream && !!c.stream) || shouldForceReset)
         scheduleConferenceLayout();
 
     showVideo();
@@ -8034,8 +8229,10 @@ function registerControlHandlers(c, media, container) {
  */
 function delMedia(localId) {
     const stream = getAllStreams().find(c => c.localId === localId);
-    if (stream)
+    if (stream) {
         clearTransportRecovery(stream);
+        clearDownstreamTrackLifecycle(stream);
+    }
     const userId = getStreamUserId(stream);
     const peer = document.getElementById('peer-' + localId);
     if (!peer) {
@@ -8071,6 +8268,17 @@ function delMedia(localId) {
     hideVideo();
     if (userId)
         refreshParticipantPresence(userId);
+}
+
+function shouldSuppressDownstreamFailureWarning(c) {
+    if (!c || c.up)
+        return true;
+    if (isExpectedDownstreamRecovery(c))
+        return true;
+    if (c.label === 'camera' && c.stream && !hasVideoTrack(c.stream))
+        return true;
+    const media = document.getElementById('media-' + c.localId);
+    return !(media instanceof HTMLMediaElement) || !media.srcObject;
 }
 
 /**
@@ -8110,7 +8318,8 @@ function setMediaStatus(c) {
         media.classList.remove('media-failed');
     }
 
-    if (!c.up && state === 'failed') {
+    if (!c.up && state === 'failed' &&
+        !shouldSuppressDownstreamFailureWarning(c)) {
         const from = c.username ?
             `from user ${c.username}` :
             'from anonymous user';

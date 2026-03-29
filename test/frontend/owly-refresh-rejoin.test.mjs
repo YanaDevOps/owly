@@ -187,13 +187,22 @@ function buildPlaceholderApi({ now = 1000, userStreams = [] } = {}) {
       return context.__userStreams;
     },
     hasVideoTrack(stream) {
-      return !!(stream && stream.hasVideo);
+      if (!stream) {
+        return false;
+      }
+      if (typeof stream.getTracks === 'function') {
+        return stream.getTracks().some(
+          track => track.kind === 'video' && track.readyState !== 'ended',
+        );
+      }
+      return !!stream.hasVideo;
     },
   });
 
   const snippet = [
     extractFunction('getOrCreateParticipantState'),
     extractConst('participantReconnectPlaceholderGracePeriod'),
+    extractFunction('getParticipantLiveStreamSummary'),
     extractFunction('getConferencePlaceholderStatus'),
     extractFunction('shouldRenderConferencePlaceholder'),
     'this.__exports = {',
@@ -470,7 +479,35 @@ test('audio-only placeholder stays visible', () => {
     },
   };
 
-  assert.equal(api.getConferencePlaceholderStatus(participant), 'Audio only');
+  assert.equal(api.getConferencePlaceholderStatus(participant), 'Camera off');
+  assert.equal(api.shouldRenderConferencePlaceholder(participant), true);
+});
+
+test('live stream summary overrides stale roster metadata for stopped camera', () => {
+  const api = buildPlaceholderApi({
+    userStreams: [{
+      label: 'camera',
+      stream: {
+        getTracks() {
+          return [{ kind: 'audio', readyState: 'live' }];
+        },
+      },
+    }],
+  });
+  const participant = {
+    id: 'remote-4',
+    local: false,
+    userinfo: {
+      streams: {
+        camera: {
+          video: true,
+          audio: true,
+        },
+      },
+    },
+  };
+
+  assert.equal(api.getConferencePlaceholderStatus(participant), 'Camera off');
   assert.equal(api.shouldRenderConferencePlaceholder(participant), true);
 });
 

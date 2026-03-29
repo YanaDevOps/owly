@@ -484,6 +484,246 @@ function buildGotCloseApi() {
   };
 }
 
+function buildDownstreamLifecycleApi() {
+  const calls = {
+    clearTransportRecovery: 0,
+    delMedia: [],
+    refreshParticipantPresence: [],
+    setMedia: [],
+    renderParticipantRow: [],
+    statsIntervals: [],
+  };
+  const participantStates = new Map();
+  let now = 1000;
+
+  const context = vm.createContext({
+    console,
+    Map,
+    Date: {
+      now() {
+        return now;
+      },
+    },
+    serverConnection: null,
+    isFirefox() {
+      return false;
+    },
+    debugLog() {},
+    clearTransportRecovery() {
+      calls.clearTransportRecovery += 1;
+    },
+    delMedia(localId) {
+      calls.delMedia.push(localId);
+    },
+    refreshParticipantPresence(id) {
+      calls.refreshParticipantPresence.push(id);
+    },
+    setMedia(c, _mirror, _video, forceReset) {
+      calls.setMedia.push({ localId: c.localId, forceReset: !!forceReset });
+    },
+    resetMedia() {},
+    handleTransportStatus() {},
+    setMediaStatus() {},
+    gotDownStats() {},
+    shouldRunActivityDetection() {
+      return false;
+    },
+    getActivityDetectionInterval() {
+      return 0;
+    },
+    hasVideoTrack(stream) {
+      return !!(
+        stream &&
+        stream.getTracks().some(
+          track => track.kind === 'video' && track.readyState !== 'ended',
+        )
+      );
+    },
+    getOrCreateParticipantState(id) {
+      if (!participantStates.has(id)) {
+        participantStates.set(id, {
+          userinfo: { username: 'alice', streams: {} },
+          transientDisconnect: false,
+          placeholderConnectingSince: 0,
+        });
+      }
+      return participantStates.get(id);
+    },
+    renderParticipantRow(id) {
+      calls.renderParticipantRow.push(id);
+    },
+  });
+
+  const snippet = [
+    'let serverConnection = null;',
+    extractConst('participantReconnectPlaceholderGracePeriod'),
+    extractConst('conferenceConnectingPlaceholderGracePeriod'),
+    extractFunction('noteExpectedDownstreamRecovery'),
+    extractFunction('clearExpectedDownstreamRecovery'),
+    extractFunction('isExpectedDownstreamRecovery'),
+    extractFunction('clearDownstreamTrackLifecycle'),
+    extractFunction('bindDownstreamTrackLifecycle'),
+    extractFunction('markParticipantStreamReconnecting'),
+    extractFunction('gotDownStream'),
+    'this.__exports = {',
+    '  gotDownStream,',
+    '  isExpectedDownstreamRecovery,',
+    '  setServerConnection(value) { serverConnection = value; },',
+    '  advanceTime(value) { __now = value; },',
+    '};',
+  ].join('\n\n');
+
+  context.__now = now;
+  Object.defineProperty(context.Date, 'now', {
+    value() {
+      return context.__now;
+    },
+  });
+  vm.runInContext(snippet, context);
+  return {
+    ...context.__exports,
+    calls,
+    participantStates,
+    setNow(value) {
+      context.__now = value;
+    },
+  };
+}
+
+function buildCameraToggleApi() {
+  const calls = {
+    displayMessage: [],
+    setLocalCameraOff: [],
+    refreshLocalCameraUi: [],
+    replaceCameraStream: 0,
+  };
+  const audioTrack = { kind: 'audio', readyState: 'live' };
+  const liveVideoTrack = { kind: 'video', readyState: 'live' };
+  let currentCamera = null;
+
+  const context = vm.createContext({
+    console,
+    displayMessage(message) {
+      calls.displayMessage.push(message);
+    },
+    setLocalCameraOff(value, reflect) {
+      calls.setLocalCameraOff.push([value, reflect]);
+    },
+    refreshLocalCameraUi(stream) {
+      calls.refreshLocalCameraUi.push(stream && stream.localId);
+    },
+    hasVideoTrack(stream) {
+      return !!(
+        stream &&
+        stream.getTracks().some(
+          track => track.kind === 'video' && track.readyState !== 'ended',
+        )
+      );
+    },
+    findUpMedia(label) {
+      return label === 'camera' ? currentCamera : null;
+    },
+    async replaceCameraStream() {
+      calls.replaceCameraStream += 1;
+    },
+  });
+
+  const snippet = [
+    extractFunction('hasActiveAudioTrack'),
+    extractFunction('stopCameraTrackInSession'),
+    extractFunction('startCameraTrackInSession'),
+    'this.__exports = {',
+    '  stopCameraTrackInSession,',
+    '  startCameraTrackInSession,',
+    '};',
+  ].join('\n\n');
+
+  vm.runInContext(snippet, context);
+  return {
+    ...context.__exports,
+    calls,
+    setCurrentCamera(value) {
+      currentCamera = value;
+    },
+    makeCamera({ withVideo }) {
+      return {
+        localId: 'camera-1',
+        stream: {
+          getAudioTracks() {
+            return [audioTrack];
+          },
+          getVideoTracks() {
+            return withVideo ? [liveVideoTrack] : [];
+          },
+          getTracks() {
+            return withVideo ? [audioTrack, liveVideoTrack] : [audioTrack];
+          },
+        },
+      };
+    },
+  };
+}
+
+class FakeEventTarget {
+  constructor() {
+    this.listeners = new Map();
+  }
+
+  addEventListener(type, listener) {
+    if (!this.listeners.has(type)) {
+      this.listeners.set(type, new Set());
+    }
+    this.listeners.get(type).add(listener);
+  }
+
+  removeEventListener(type, listener) {
+    if (!this.listeners.has(type)) {
+      return;
+    }
+    this.listeners.get(type).delete(listener);
+  }
+
+  emit(type, event = {}) {
+    const listeners = this.listeners.get(type);
+    if (!listeners) {
+      return;
+    }
+    for (const listener of Array.from(listeners)) {
+      listener(event);
+    }
+  }
+}
+
+class FakeTrack extends FakeEventTarget {
+  constructor(kind, id, readyState = 'live') {
+    super();
+    this.kind = kind;
+    this.id = id;
+    this.readyState = readyState;
+  }
+}
+
+class FakeStream extends FakeEventTarget {
+  constructor(tracks = []) {
+    super();
+    this.tracks = [...tracks];
+  }
+
+  getTracks() {
+    return [...this.tracks];
+  }
+
+  addTrack(track) {
+    this.tracks.push(track);
+    this.emit('addtrack', { track });
+  }
+
+  removeTrack(track) {
+    this.tracks = this.tracks.filter(candidate => candidate !== track);
+    this.emit('removetrack', { track });
+  }
+}
+
 test('getMaxVideoThroughput applies mobile and pressure caps', () => {
   const api = buildVideoThroughputApi();
 
@@ -665,4 +905,97 @@ test('gotClose preserves local presentation intent during auto reconnect', () =>
   assert.equal(api.calls.closeSafariStream, 1);
   assert.equal(api.calls.updateReconnectCooldownUi, 1);
   assert.equal(api.getServerConnection(), connection);
+});
+
+test('stopCameraTrackInSession uses full camera replacement and lands in audio-only mode', async () => {
+  const api = buildCameraToggleApi();
+  const original = api.makeCamera({ withVideo: true });
+
+  api.setCurrentCamera(api.makeCamera({ withVideo: false }));
+  const ok = await api.stopCameraTrackInSession(original);
+
+  assert.equal(ok, true);
+  assert.equal(api.calls.replaceCameraStream, 1);
+  assert.deepEqual(api.calls.setLocalCameraOff, [[true, true]]);
+  assert.deepEqual(api.calls.refreshLocalCameraUi, ['camera-1']);
+  assert.deepEqual(api.calls.displayMessage, []);
+});
+
+test('startCameraTrackInSession uses full camera replacement and restores video', async () => {
+  const api = buildCameraToggleApi();
+  const original = api.makeCamera({ withVideo: false });
+
+  api.setCurrentCamera(api.makeCamera({ withVideo: true }));
+  const ok = await api.startCameraTrackInSession(original);
+
+  assert.equal(ok, true);
+  assert.equal(api.calls.replaceCameraStream, 1);
+  assert.deepEqual(api.calls.setLocalCameraOff, [[false, true]]);
+  assert.deepEqual(api.calls.refreshLocalCameraUi, ['camera-1']);
+});
+
+test('downstream replace clears stale media and marks participant reconnecting', () => {
+  const api = buildDownstreamLifecycleApi();
+  const connection = {};
+  const stream = {
+    localId: 'down-1',
+    source: 'user-1',
+    username: 'alice',
+    userdata: {},
+    setStatsInterval(interval) {
+      api.calls.statsIntervals.push(interval);
+    },
+  };
+
+  api.setServerConnection(connection);
+  api.gotDownStream.call(connection, stream);
+  stream.onclose(true);
+
+  assert.equal(api.calls.clearTransportRecovery, 1);
+  assert.deepEqual(api.calls.delMedia, ['down-1']);
+  assert.deepEqual(api.calls.refreshParticipantPresence, ['user-1']);
+  assert.deepEqual(api.calls.renderParticipantRow, ['user-1']);
+  assert.equal(api.participantStates.get('user-1').transientDisconnect, true);
+  assert.equal(api.isExpectedDownstreamRecovery(stream), true);
+  assert.deepEqual(api.calls.statsIntervals, [0]);
+});
+
+test('downstream track lifecycle forces media rebind when tracks change on the same stream', () => {
+  const api = buildDownstreamLifecycleApi();
+  const connection = {};
+  const initialTrack = new FakeTrack('video', 'track-1');
+  const replacementTrack = new FakeTrack('video', 'track-2');
+  const mediaStream = new FakeStream([initialTrack]);
+  const stream = {
+    localId: 'down-2',
+    source: 'user-2',
+    username: 'bob',
+    userdata: {},
+    setStatsInterval() {},
+  };
+
+  api.setServerConnection(connection);
+  api.gotDownStream.call(connection, stream);
+  stream.ondowntrack(initialTrack, null, mediaStream);
+  mediaStream.removeTrack(initialTrack);
+
+  assert.equal(api.isExpectedDownstreamRecovery(stream), true);
+
+  mediaStream.addTrack(replacementTrack);
+
+  assert.equal(api.isExpectedDownstreamRecovery(stream), false);
+
+  replacementTrack.readyState = 'ended';
+  replacementTrack.emit('ended');
+
+  assert.equal(api.isExpectedDownstreamRecovery(stream), true);
+  assert.deepEqual(
+    api.calls.setMedia.map(call => call.forceReset),
+    [false, true, true, true, true],
+  );
+  assert.deepEqual(api.calls.refreshParticipantPresence, [
+    'user-2',
+    'user-2',
+    'user-2',
+  ]);
 });
