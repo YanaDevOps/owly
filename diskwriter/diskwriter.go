@@ -70,6 +70,14 @@ func (client *Client) SetUsername(string) {
 	return
 }
 
+func (client *Client) ResumeToken() string {
+	return ""
+}
+
+func (client *Client) SetResumeToken(string) {
+	return
+}
+
 func (client *Client) SetPermissions(perms []string) {
 	return
 }
@@ -244,14 +252,37 @@ func (conn *diskConn) Close() error {
 }
 
 var replacer = strings.NewReplacer(
-	"/", "-slash-",
-	"\\", "-backslash-",
+	"~", "~~",
 )
 
 // sanitise sanitises a string so it can be safely used in a filename
 // It does not need to be injective, since we check for filename collisions.
 func sanitise(s string) string {
-	return replacer.Replace(s)
+	if s == "" {
+		return ""
+	}
+
+	const hexDigits = "0123456789abcdef"
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			b.WriteByte(c)
+		case c >= 'A' && c <= 'Z':
+			b.WriteByte(c)
+		case c >= '0' && c <= '9':
+			b.WriteByte(c)
+		case c == '.', c == '-', c == '_', c == ' ', c == ',':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('~')
+			b.WriteByte(hexDigits[c>>4])
+			b.WriteByte(hexDigits[c&0x0f])
+		}
+	}
+	return replacer.Replace(b.String())
 }
 
 func openDiskFile(directory, username, extension string) (*os.File, error) {

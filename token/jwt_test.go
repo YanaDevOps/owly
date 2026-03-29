@@ -124,6 +124,7 @@ func TestJWT(t *testing.T) {
 	keys := []map[string]interface{}{k}
 	john := "john"
 	jack := "jack"
+	host := "galene.org:8443"
 
 	goodToken := "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqb2huIiwiYXVkIjoiaHR0cHM6Ly9nYWxlbmUub3JnOjg0NDMvZ3JvdXAvYXV0aC8iLCJwZXJtaXNzaW9ucyI6WyJwcmVzZW50Il0sImlhdCI6MTY0NTMxMDI5NCwiZXhwIjoyOTA2NzUwMjk0LCJpc3MiOiJodHRwOi8vbG9jYWxob3N0OjEyMzQvIn0.6xXpgBkBMn4PSBpnwYHb-gRn_Q97Yq9DoKkAf2_6iwc"
 
@@ -132,7 +133,7 @@ func TestJWT(t *testing.T) {
 		t.Errorf("Couldn't parse goodToken: %v", err)
 	}
 
-	username, perms, err := tok.Check("owly.org:8443", "auth", &john)
+	username, perms, err := tok.Check(host, "auth", &john)
 	if err != nil {
 		t.Errorf("goodToken is not valid: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestJWT(t *testing.T) {
 		t.Errorf("Expected john, [present], got %v %v", username, perms)
 	}
 
-	username, perms, err = tok.Check("owly.org:8443", "auth", &jack)
+	username, perms, err = tok.Check(host, "auth", &jack)
 	if err != nil {
 		t.Errorf("goodToken is not valid: %v", err)
 	}
@@ -158,12 +159,12 @@ func TestJWT(t *testing.T) {
 		t.Errorf("goodToken is valid for wrong hostname")
 	}
 
-	_, _, err = tok.Check("owly.org:8443", "not-auth", &john)
+	_, _, err = tok.Check(host, "not-auth", &john)
 	if err == nil {
 		t.Errorf("goodToken is valid for wrong group")
 	}
 
-	_, _, err = tok.Check("owly.org:8443", "auth/subgroup", &john)
+	_, _, err = tok.Check(host, "auth/subgroup", &john)
 	if err == nil {
 		t.Errorf("goodToken is valid for subgroup")
 	}
@@ -174,7 +175,7 @@ func TestJWT(t *testing.T) {
 	if err != nil {
 		t.Errorf("Couldn't parse emptySubToken: %v", err)
 	}
-	username, perms, err = tok.Check("owly.org:8443", "auth", &jack)
+	username, perms, err = tok.Check(host, "auth", &jack)
 	if err != nil {
 		t.Errorf("anonymousToken is not valid: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestJWT(t *testing.T) {
 	if err != nil {
 		t.Errorf("Couldn't parse noSubToken: %v", err)
 	}
-	username, perms, err = tok.Check("owly.org:8443", "auth", &jack)
+	username, perms, err = tok.Check(host, "auth", &jack)
 	if err != nil {
 		t.Errorf("noSubToken is not valid: %v", err)
 	}
@@ -222,7 +223,7 @@ func TestJWT(t *testing.T) {
 		t.Errorf("subgroupsToken is not valid: %v", err)
 	}
 
-	_, _, err = tok.Check("owly.org:8443", "auth/subgroup", &john)
+	_, _, err = tok.Check(host, "auth/subgroup", &john)
 	if err != nil {
 		t.Errorf("subgroupsToken is not valid for subgroup: %v", err)
 	}

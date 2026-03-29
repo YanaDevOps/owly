@@ -9,11 +9,11 @@
     "url": "git+https://github.com/YanaDevOps/owly.git"
   },
   "scripts": {
-    "lint": "eslint static/*.js",
-    "lint:fix": "eslint static/*.js --fix",
+    "lint": "node scripts/run-eslint.mjs static/*.js",
+    "lint:fix": "node scripts/run-eslint.mjs static/*.js --fix",
     "test": "npm run test:frontend && npm run test:backend",
     "test:frontend": "node scripts/run-frontend-tests.mjs",
-    "test:backend": "node scripts/run-go-tests.mjs",
+    "test:backend": "go test ./group ./rtpconn ./token ./webserver",
     "test:smoke": "playwright test",
     "test:security": "node scripts/run-security-checks.mjs",
     "test:security:audit": "npm audit --audit-level=high",

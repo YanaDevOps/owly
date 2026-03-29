@@ -1,6 +1,6 @@
 FROM golang:alpine3.23 AS builder
 
-RUN apk add --no-cache npm wget make
+RUN apk add --no-cache curl npm wget make
 
 WORKDIR /src
 COPY go.mod go.sum ./

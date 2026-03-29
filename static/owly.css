@@ -1053,7 +1053,7 @@ html.dark-theme .stage-card {
     top: auto;
     right: 18px;
     bottom: 18px;
-    z-index: 45;
+    z-index: 34;
     width: clamp(132px, 17vw, 214px);
     aspect-ratio: 3 / 4;
     max-width: calc(100% - 36px);
@@ -3819,8 +3819,8 @@ html.dark-theme .no-media-list li {
     }
 
     .self-preview-slot.preview-docked {
-        top: auto;
-        bottom: calc(14px + env(safe-area-inset-bottom));
+        top: var(--self-preview-top, auto);
+        bottom: auto;
     }
 
     .self-preview-slot.preview-custom-position {
@@ -4067,6 +4067,7 @@ html.dark-theme .no-media-list li {
         top: auto;
         right: 12px;
         bottom: calc(12px + env(safe-area-inset-bottom));
+        z-index: 30;
         width: clamp(76px, 27vw, 104px);
     }
 

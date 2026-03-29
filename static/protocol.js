@@ -50,6 +50,7 @@ function newRandomId() {
 
 const clientIdStorageKey = 'owly_client_id_v1';
 const clientUsernameStorageKey = 'owly_client_username_v1';
+const clientResumeTokenStorageKey = 'owly_client_resume_token_v1';
 const clientTabKeyWindowPrefix = 'owly-client-tab-v1:';
 
 function isPersistentClientId(value) {
@@ -161,9 +162,18 @@ function getPersistentClientUsername() {
     return getPersistentClientValue(clientUsernameStorageKey);
 }
 
+function getPersistentClientResumeToken() {
+    return getPersistentClientValue(clientResumeTokenStorageKey);
+}
+
 function rememberPersistentClientUsername(username) {
     const value = username ? `${username}` : null;
     setPersistentClientValue(clientUsernameStorageKey, value);
+}
+
+function rememberPersistentClientResumeToken(resumeToken) {
+    const value = resumeToken ? `${resumeToken}` : null;
+    setPersistentClientValue(clientResumeTokenStorageKey, value);
 }
 
 function rotatePersistentClientId() {
@@ -176,12 +186,15 @@ function ensurePersistentClientIdForUsername(username) {
     const nextUsername = typeof username === 'string' ? username.trim() : '';
     if (!nextUsername) {
         rememberPersistentClientUsername(null);
+        rememberPersistentClientResumeToken(null);
         return getPersistentClientId();
     }
 
     const currentUsername = getPersistentClientUsername();
-    if (currentUsername && currentUsername !== nextUsername)
+    if (currentUsername && currentUsername !== nextUsername) {
         rotatePersistentClientId();
+        rememberPersistentClientResumeToken(null);
+    }
 
     rememberPersistentClientUsername(nextUsername);
     return getPersistentClientId();
@@ -668,6 +681,8 @@ ServerConnection.prototype.connect = function(url) {
                 }
                 sc.group = m.group;
                 sc.username = m.username;
+                if (typeof m.resumeToken === 'string' && m.resumeToken)
+                    rememberPersistentClientResumeToken(m.resumeToken);
                 sc.permissions = m.permissions || [];
                 sc.rtcConfiguration = m.rtcConfiguration || null;
             }
@@ -790,6 +805,9 @@ ServerConnection.prototype.join = async function(group, username, credentials, d
     };
     if (typeof username !== 'undefined' && username !== null)
         m.username = username;
+    const resumeToken = getPersistentClientResumeToken();
+    if (resumeToken)
+        m.resumeToken = resumeToken;
 
     if ((typeof credentials) === 'string') {
         m.password = credentials;

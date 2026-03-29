@@ -1,6 +1,10 @@
 package group
 
 import (
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -632,7 +636,7 @@ func member(v string, l []string) bool {
 	return false
 }
 
-func canReplaceClient(existing Client, replacement Client) bool {
+func canReplaceClient(existing Client, replacement Client, resumeToken string) bool {
 	if existing == nil || replacement == nil {
 		return false
 	}
@@ -640,7 +644,26 @@ func canReplaceClient(existing Client, replacement Client) bool {
 		member("system", replacement.Permissions()) {
 		return false
 	}
-	return existing.Username() == replacement.Username()
+	if existing.Username() != replacement.Username() {
+		return false
+	}
+	existingToken := existing.ResumeToken()
+	if existingToken == "" || resumeToken == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare(
+		[]byte(existingToken),
+		[]byte(resumeToken),
+	) == 1
+}
+
+func newResumeToken() (string, error) {
+	var b [16]byte
+	_, err := rand.Read(b[:])
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", b[:]), nil
 }
 
 func AddClient(group string, c Client, creds ClientCredentials) (*Group, error) {
@@ -721,9 +744,19 @@ func AddClient(group string, c Client, creds ClientCredentials) (*Group, error) 
 		return nil, errors.New("client has empty id")
 	}
 	existing := g.clients[id]
-	if existing != nil && !canReplaceClient(existing, c) {
-		g.mu.Unlock()
-		return nil, ProtocolError("duplicate client id")
+	if existing != nil {
+		if !canReplaceClient(existing, c, creds.ResumeToken) {
+			g.mu.Unlock()
+			return nil, ProtocolError("duplicate client id")
+		}
+		c.SetResumeToken(existing.ResumeToken())
+	} else if !member("system", c.Permissions()) {
+		resumeToken, err := newResumeToken()
+		if err != nil {
+			g.mu.Unlock()
+			return nil, err
+		}
+		c.SetResumeToken(resumeToken)
 	}
 
 	if !member("system", c.Permissions()) &&
@@ -1127,6 +1160,8 @@ type Configuration struct {
 
 	// obsolete fields
 	Admin []ClientPattern `json:"admin,omitempty"`
+
+	contentHash [sha256.Size]byte `json:"-"`
 }
 
 func (conf Configuration) Zero() bool {
@@ -1138,6 +1173,8 @@ var configuration struct {
 	mu            sync.Mutex
 	configuration *Configuration
 }
+
+var warnMissingCanonicalHost sync.Once
 
 func GetConfiguration() (*Configuration, error) {
 	configuration.mu.Lock()
@@ -1162,31 +1199,55 @@ func GetConfiguration() (*Configuration, error) {
 	if configuration.configuration.fileName == filename &&
 		configuration.configuration.modTime.Equal(fi.ModTime()) &&
 		configuration.configuration.fileSize == fi.Size() {
+		data, err := os.ReadFile(filename)
+		if err != nil {
+			return nil, err
+		}
+		if sha256.Sum256(data) == configuration.configuration.contentHash {
+			return configuration.configuration, nil
+		}
+		var conf Configuration
+		err = decodeConfiguration(filename, data, &conf)
+		if err != nil {
+			return nil, err
+		}
+		conf.modTime = fi.ModTime()
+		conf.fileSize = fi.Size()
+		conf.fileName = filename
+		conf.contentHash = sha256.Sum256(data)
+		configuration.configuration = &conf
 		return configuration.configuration, nil
 	}
 
-	f, err := os.Open(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	d := json.NewDecoder(f)
-	d.DisallowUnknownFields()
 	var conf Configuration
-	err = d.Decode(&conf)
+	err = decodeConfiguration(filename, data, &conf)
 	if err != nil {
 		return nil, err
+	}
+	conf.modTime = fi.ModTime()
+	conf.fileSize = fi.Size()
+	conf.fileName = filename
+	conf.contentHash = sha256.Sum256(data)
+	configuration.configuration = &conf
+	return configuration.configuration, nil
+}
+
+func decodeConfiguration(filename string, data []byte, conf *Configuration) error {
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	err := d.Decode(conf)
+	if err != nil {
+		return err
 	}
 	if conf.Admin != nil {
 		log.Printf("%v: field \"admin\" is obsolete, ignored", filename)
 		conf.Admin = nil
 	}
-	conf.modTime = fi.ModTime()
-	conf.fileSize = fi.Size()
-	conf.fileName = filename
-	configuration.configuration = &conf
-	return configuration.configuration, nil
+	return nil
 }
 
 // called locked
@@ -1271,6 +1332,11 @@ func (g *Group) getPermission(creds ClientCredentials) (string, []string, error)
 		conf, err := GetConfiguration()
 		if err != nil {
 			return "", nil, err
+		}
+		if conf.CanonicalHost == "" {
+			warnMissingCanonicalHost.Do(func() {
+				log.Printf("Warning: canonicalHost is unset; JWT audience host validation is disabled until data/config.json sets it")
+			})
 		}
 
 		username, perms, err =

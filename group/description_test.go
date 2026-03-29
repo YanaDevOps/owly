@@ -322,3 +322,42 @@ func TestSubGroup(t *testing.T) {
 		t.Fatalf("UpdateDescription: got %v", err)
 	}
 }
+
+func TestSetWildcardUserPasswordWithoutNamedUsers(t *testing.T) {
+	err := setupTest(t.TempDir(), t.TempDir(), true)
+	if err != nil {
+		t.Fatalf("setupTest: %v", err)
+	}
+
+	err = UpdateDescription("wild", "", &Description{})
+	if err != nil {
+		t.Fatalf("UpdateDescription: %v", err)
+	}
+
+	err = UpdateUser("wild", "", true, "", &UserDescription{
+		Permissions: Permissions{name: "message"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateUser wildcard: %v", err)
+	}
+
+	pw := "pw"
+	err = SetUserPassword("wild", "", true, Password{
+		Type: "plain",
+		Key:  &pw,
+	})
+	if err != nil {
+		t.Fatalf("SetUserPassword: %v", err)
+	}
+
+	desc, err := GetDescription("wild")
+	if err != nil {
+		t.Fatalf("GetDescription: %v", err)
+	}
+	if desc.WildcardUser == nil || desc.WildcardUser.Password.Type != "plain" {
+		t.Fatalf("expected wildcard password to be updated, got %#v", desc.WildcardUser)
+	}
+	if desc.Users != nil {
+		t.Fatalf("expected named users to remain nil, got %#v", desc.Users)
+	}
+}

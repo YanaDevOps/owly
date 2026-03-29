@@ -11,7 +11,7 @@ func TestSanitise(t *testing.T) {
 	tests := []struct{ a, b string }{
 		{"Alas", "Alas"},
 		{", poor Horatio", ", poor Horatio"},
-		{"I/knew\\him/well", "I-slash-knew-backslash-him-slash-well"},
+		{"I/knew\\him/well", "I~~2fknew~~5chim~~2fwell"},
 	}
 
 	for _, tt := range tests {

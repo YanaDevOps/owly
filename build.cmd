@@ -3,10 +3,13 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 set "ROOT=%~dp0"
 set "BINARY=owly.exe"
-set "MEDIAPIPE_PACKAGE=@mediapipe/tasks-vision"
+set "MEDIAPIPE_VERSION=0.10.34"
+set "MEDIAPIPE_TARBALL_URL=https://registry.npmjs.org/@mediapipe/tasks-vision/-/tasks-vision-0.10.34.tgz"
+set "MEDIAPIPE_TARBALL_SHA256=074761536391855D89EDBC6D8E811DE0DEE99CBA8C2B6B5C0167250F11755979"
 set "MEDIAPIPE_DIR=static\third-party\tasks-vision"
 set "MODELS_DIR=%MEDIAPIPE_DIR%\models"
-set "MODEL_URL=https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite"
+set "MODEL_URL=https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite?generation=1683436453600523"
+set "MODEL_SHA256=191AC9529AE506EE0BEEFA6B2C945A172DAB9D07D1E802A290A4E4038226658B"
 set "TARGET=%~1"
 set "EXITCODE=0"
 set "ROOT_URI=%ROOT:\=/%"
@@ -113,11 +116,6 @@ echo Built: %ROOT%%BINARY%
 exit /b 0
 
 :blur
-where /q npm.cmd
-if errorlevel 1 (
-    echo Required tool not found: npm.cmd
-    exit /b 1
-)
 where /q curl.exe
 if errorlevel 1 (
     echo Required tool not found: curl.exe
@@ -135,7 +133,8 @@ if errorlevel 1 (
 )
 
 set "TMP_DIR=%TEMP%\owly-mediapipe-%RANDOM%%RANDOM%"
-set "PACKAGE_ARCHIVE="
+set "PACKAGE_ARCHIVE=%TMP_DIR%\tasks-vision-%MEDIAPIPE_VERSION%.tgz"
+set "MODEL_FILE=%TMP_DIR%\selfie_segmenter.tflite"
 
 mkdir "%TMP_DIR%" >nul 2>&1
 if errorlevel 1 (
@@ -144,36 +143,31 @@ if errorlevel 1 (
 )
 
 echo Installing background blur assets...
+curl.exe -L --fail --silent --show-error "%MEDIAPIPE_TARBALL_URL%" -o "%PACKAGE_ARCHIVE%"
+if errorlevel 1 (
+    rmdir /s /q "%TMP_DIR%" >nul 2>&1
+    echo Failed to download MediaPipe package archive.
+    exit /b 1
+)
+
+call :verify_sha256 "%PACKAGE_ARCHIVE%" "%MEDIAPIPE_TARBALL_SHA256%"
+if errorlevel 1 (
+    rmdir /s /q "%TMP_DIR%" >nul 2>&1
+    echo MediaPipe package checksum verification failed.
+    exit /b 1
+)
+
 pushd "%TMP_DIR%" >nul || (
     echo Failed to enter temp directory: %TMP_DIR%
     rmdir /s /q "%TMP_DIR%" >nul 2>&1
     exit /b 1
 )
 
-call npm.cmd pack %MEDIAPIPE_PACKAGE% --silent >nul
+tar.exe -xzf "tasks-vision-%MEDIAPIPE_VERSION%.tgz" >nul
 if errorlevel 1 (
     popd >nul
     rmdir /s /q "%TMP_DIR%" >nul 2>&1
-    echo Failed to download %MEDIAPIPE_PACKAGE%.
-    exit /b 1
-)
-
-for /f "delims=" %%F in ('dir /b mediapipe-tasks-vision-*.tgz 2^>nul') do (
-    if not defined PACKAGE_ARCHIVE set "PACKAGE_ARCHIVE=%%F"
-)
-
-if not defined PACKAGE_ARCHIVE (
-    popd >nul
-    rmdir /s /q "%TMP_DIR%" >nul 2>&1
-    echo Could not locate downloaded MediaPipe package archive.
-    exit /b 1
-)
-
-tar.exe -xzf "%PACKAGE_ARCHIVE%" >nul
-if errorlevel 1 (
-    popd >nul
-    rmdir /s /q "%TMP_DIR%" >nul 2>&1
-    echo Failed to extract %PACKAGE_ARCHIVE%.
+    echo Failed to extract tasks-vision-%MEDIAPIPE_VERSION%.tgz.
     exit /b 1
 )
 
@@ -197,7 +191,7 @@ if !ROBOCOPY_EXIT! GEQ 8 (
 )
 
 mkdir "%ROOT%%MODELS_DIR%" >nul 2>&1
-curl.exe -L --fail --silent --show-error "%MODEL_URL%" -o "%ROOT%%MODELS_DIR%\selfie_segmenter.tflite"
+curl.exe -L --fail --silent --show-error "%MODEL_URL%" -o "%MODEL_FILE%"
 if errorlevel 1 (
     popd >nul
     rmdir /s /q "%TMP_DIR%" >nul 2>&1
@@ -205,10 +199,42 @@ if errorlevel 1 (
     exit /b 1
 )
 
+call :verify_sha256 "%MODEL_FILE%" "%MODEL_SHA256%"
+if errorlevel 1 (
+    popd >nul
+    rmdir /s /q "%TMP_DIR%" >nul 2>&1
+    echo Background blur model checksum verification failed.
+    exit /b 1
+)
+
+copy /y "%MODEL_FILE%" "%ROOT%%MODELS_DIR%\selfie_segmenter.tflite" >nul
+if errorlevel 1 (
+    popd >nul
+    rmdir /s /q "%TMP_DIR%" >nul 2>&1
+    echo Failed to install background blur model.
+    exit /b 1
+)
+
 popd >nul
 rmdir /s /q "%TMP_DIR%" >nul 2>&1
 echo Background blur enabled.
 exit /b 0
+
+:verify_sha256
+setlocal
+set "FILE=%~1"
+set "EXPECTED=%~2"
+set "ACTUAL="
+for /f "skip=1 tokens=1" %%H in ('certutil -hashfile "%FILE%" SHA256 ^| findstr /R /I "^[0-9A-F][0-9A-F]"') do (
+    if not defined ACTUAL set "ACTUAL=%%H"
+)
+if not defined ACTUAL (
+    endlocal & exit /b 1
+)
+if /I not "%ACTUAL%"=="%EXPECTED%" (
+    endlocal & exit /b 1
+)
+endlocal & exit /b 0
 
 :clean
 if exist "%BINARY%" del /f /q "%BINARY%" >nul 2>&1

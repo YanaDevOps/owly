@@ -330,22 +330,26 @@ test('media budget falls back to legacy normal throughput', () => {
   assert.equal(api.doSimulcast(), true);
 });
 
-test('mobile throughput no longer depends on filter or pressure caps', () => {
+test('mobile throughput applies adaptive filter and pressure caps', () => {
   const api = buildMediaBudgetApi({
     performanceProfile: 'low-power-mobile',
     send: 'unlimited',
   });
 
   assert.equal(api.getMaxVideoThroughput({
+    up: true,
+    label: 'camera',
     userdata: {
       filterDefinition: api.filters['background-replace'],
     },
-  }), null);
+  }), 600000);
   assert.equal(api.getMaxVideoThroughput({
+    up: true,
+    label: 'camera',
     userdata: {
       pressureBitrateCap: 350000,
     },
-  }), null);
+  }), 350000);
 });
 
 test('old settings are normalised immediately when read', () => {

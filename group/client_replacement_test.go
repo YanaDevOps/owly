@@ -14,20 +14,23 @@ type testClient struct {
 	group       *Group
 	id          string
 	username    string
+	resumeToken string
 	permissions []string
 	data        map[string]interface{}
 	closed      bool
-	pushKinds    []string
-	joinedKinds  []string
+	pushKinds   []string
+	joinedKinds []string
 }
 
-func (c *testClient) Group() *Group { return c.group }
-func (c *testClient) Addr() net.Addr { return nil }
-func (c *testClient) Id() string { return c.id }
-func (c *testClient) Username() string { return c.username }
-func (c *testClient) SetUsername(username string) { c.username = username }
-func (c *testClient) Permissions() []string { return c.permissions }
-func (c *testClient) SetPermissions(perms []string) { c.permissions = perms }
+func (c *testClient) Group() *Group                     { return c.group }
+func (c *testClient) Addr() net.Addr                    { return nil }
+func (c *testClient) Id() string                        { return c.id }
+func (c *testClient) Username() string                  { return c.username }
+func (c *testClient) SetUsername(username string)       { c.username = username }
+func (c *testClient) ResumeToken() string               { return c.resumeToken }
+func (c *testClient) SetResumeToken(resumeToken string) { c.resumeToken = resumeToken }
+func (c *testClient) Permissions() []string             { return c.permissions }
+func (c *testClient) SetPermissions(perms []string)     { c.permissions = perms }
 func (c *testClient) Data() map[string]interface{} {
 	if c.data == nil {
 		c.data = map[string]interface{}{}
@@ -70,7 +73,41 @@ func setupReplacementGroup(t *testing.T, desc *Description) {
 	}
 }
 
-func TestAddClientReplacesExistingSessionWithSameIdentity(t *testing.T) {
+func TestAddClientRequiresResumeTokenToReplaceExistingSession(t *testing.T) {
+	desc := &Description{
+		Users: map[string]UserDescription{
+			"alice": {
+				Password:    Password{Type: "plain", Key: stringPointer("pw")},
+				Permissions: Permissions{name: "present"},
+			},
+		},
+	}
+	setupReplacementGroup(t, desc)
+
+	first := &testClient{id: "same-client"}
+	g, err := AddClient("room", first, ClientCredentials{
+		Username: stringPointer("alice"),
+		Password: "pw",
+	})
+	if err != nil {
+		t.Fatalf("first AddClient: %v", err)
+	}
+	first.group = g
+	if first.ResumeToken() == "" {
+		t.Fatalf("expected first client to receive resume token")
+	}
+
+	second := &testClient{id: "same-client"}
+	_, err = AddClient("room", second, ClientCredentials{
+		Username: stringPointer("alice"),
+		Password: "pw",
+	})
+	if err == nil {
+		t.Fatalf("expected duplicate client id without resume token to be rejected")
+	}
+}
+
+func TestAddClientReplacesExistingSessionWithValidResumeToken(t *testing.T) {
 	desc := &Description{
 		Users: map[string]UserDescription{
 			"alice": {
@@ -93,8 +130,9 @@ func TestAddClientReplacesExistingSessionWithSameIdentity(t *testing.T) {
 
 	second := &testClient{id: "same-client"}
 	g, err = AddClient("room", second, ClientCredentials{
-		Username: stringPointer("alice"),
-		Password: "pw",
+		Username:    stringPointer("alice"),
+		Password:    "pw",
+		ResumeToken: first.ResumeToken(),
 	})
 	if err != nil {
 		t.Fatalf("second AddClient: %v", err)
@@ -106,6 +144,9 @@ func TestAddClientReplacesExistingSessionWithSameIdentity(t *testing.T) {
 	}
 	if got := g.clients["same-client"]; got != second {
 		t.Fatalf("expected replacement client to remain in group, got %#v", got)
+	}
+	if second.ResumeToken() != first.ResumeToken() {
+		t.Fatalf("expected replacement client to inherit resume token")
 	}
 	if len(second.joinedKinds) == 0 || second.joinedKinds[0] != "join" {
 		t.Fatalf("expected replacement client to receive join bootstrap, got %v", second.joinedKinds)
@@ -137,11 +178,42 @@ func TestAddClientRejectsDuplicateIdWithDifferentIdentity(t *testing.T) {
 
 	second := &testClient{id: "same-client"}
 	_, err := AddClient("room", second, ClientCredentials{
-		Username: stringPointer("bob"),
-		Password: "bob-pw",
+		Username:    stringPointer("bob"),
+		Password:    "bob-pw",
+		ResumeToken: first.ResumeToken(),
 	})
 	if err == nil {
 		t.Fatalf("expected duplicate client id to be rejected for different username")
+	}
+}
+
+func TestAddClientRejectsDuplicateIdWithWrongResumeToken(t *testing.T) {
+	desc := &Description{
+		Users: map[string]UserDescription{
+			"alice": {
+				Password:    Password{Type: "plain", Key: stringPointer("pw")},
+				Permissions: Permissions{name: "present"},
+			},
+		},
+	}
+	setupReplacementGroup(t, desc)
+
+	first := &testClient{id: "same-client"}
+	if _, err := AddClient("room", first, ClientCredentials{
+		Username: stringPointer("alice"),
+		Password: "pw",
+	}); err != nil {
+		t.Fatalf("first AddClient: %v", err)
+	}
+
+	second := &testClient{id: "same-client"}
+	_, err := AddClient("room", second, ClientCredentials{
+		Username:    stringPointer("alice"),
+		Password:    "pw",
+		ResumeToken: "wrong-token",
+	})
+	if err == nil {
+		t.Fatalf("expected duplicate client id with wrong resume token to be rejected")
 	}
 }
 

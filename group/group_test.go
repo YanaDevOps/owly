@@ -1,14 +1,22 @@
 package group
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pion/webrtc/v4"
+
+	"github.com/YanaDevOps/owly/token"
 )
 
 func TestConstantTimeCompare(t *testing.T) {
@@ -296,6 +304,99 @@ func TestExtraPermissions(t *testing.T) {
 	})
 	doit("john", []string{"token", "present", "message"})
 	doit("james", []string{})
+}
+
+func TestGetConfigurationReloadsSameSizeRewrite(t *testing.T) {
+	dir := t.TempDir()
+	DataDirectory = dir
+	configuration.configuration = nil
+
+	filename := filepath.Join(dir, "config.json")
+	first := []byte("{\"proxyURL\":\"https://a.test/base\"}\n")
+	second := []byte("{\"proxyURL\":\"http://a.test/base1\"}\n")
+	if len(first) != len(second) {
+		t.Fatalf("test fixtures must be same size")
+	}
+
+	fixedTime := time.Unix(1700000000, 0)
+	if err := os.WriteFile(filename, first, 0o600); err != nil {
+		t.Fatalf("write first config: %v", err)
+	}
+	if err := os.Chtimes(filename, fixedTime, fixedTime); err != nil {
+		t.Fatalf("chtimes first config: %v", err)
+	}
+
+	conf, err := GetConfiguration()
+	if err != nil {
+		t.Fatalf("GetConfiguration first: %v", err)
+	}
+	if conf.ProxyURL != "https://a.test/base" {
+		t.Fatalf("unexpected first proxy URL: %q", conf.ProxyURL)
+	}
+
+	if err := os.WriteFile(filename, second, 0o600); err != nil {
+		t.Fatalf("write second config: %v", err)
+	}
+	if err := os.Chtimes(filename, fixedTime, fixedTime); err != nil {
+		t.Fatalf("chtimes second config: %v", err)
+	}
+
+	conf, err = GetConfiguration()
+	if err != nil {
+		t.Fatalf("GetConfiguration second: %v", err)
+	}
+	if conf.ProxyURL != "http://a.test/base1" {
+		t.Fatalf("expected rewritten proxy URL, got %q", conf.ProxyURL)
+	}
+}
+
+func TestGetPermissionWarnsWhenCanonicalHostUnset(t *testing.T) {
+	dir := t.TempDir()
+	DataDirectory = dir
+	configuration.configuration = nil
+	warnMissingCanonicalHost = sync.Once{}
+
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	key := `{"alg":"HS256","k":"H7pCkktUl5KyPCZ7CKw09y1j460tfIv4dRcS1XstUKY","key_ops":["sign","verify"],"kty":"oct"}`
+	var parsedKey map[string]any
+	if err := json.Unmarshal([]byte(key), &parsedKey); err != nil {
+		t.Fatalf("unmarshal key: %v", err)
+	}
+
+	goodToken := "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqb2huIiwiYXVkIjoiaHR0cHM6Ly9nYWxlbmUub3JnOjg0NDMvZ3JvdXAvYXV0aC8iLCJwZXJtaXNzaW9ucyI6WyJwcmVzZW50Il0sImlhdCI6MTY0NTMxMDI5NCwiZXhwIjoyOTA2NzUwMjk0LCJpc3MiOiJodHRwOi8vbG9jYWxob3N0OjEyMzQvIn0.6xXpgBkBMn4PSBpnwYHb-gRn_Q97Yq9DoKkAf2_6iwc"
+	username := "john"
+
+	var logOutput bytes.Buffer
+	originalWriter := log.Writer()
+	log.SetOutput(&logOutput)
+	defer log.SetOutput(originalWriter)
+
+	g := Group{
+		name: "auth",
+		description: &Description{
+			AuthKeys: []map[string]any{parsedKey},
+		},
+	}
+	gotUser, perms, err := g.GetPermission(ClientCredentials{
+		Token:    goodToken,
+		Username: &username,
+	})
+	if err != nil {
+		t.Fatalf("GetPermission: %v", err)
+	}
+	if gotUser != "john" || !permissionsEqual(perms, []string{"present"}) {
+		t.Fatalf("unexpected token permission result: %q %v", gotUser, perms)
+	}
+	if !strings.Contains(logOutput.String(), "canonicalHost is unset") {
+		t.Fatalf("expected canonicalHost warning, got %q", logOutput.String())
+	}
+
+	if _, err := token.Parse(goodToken, []map[string]any{parsedKey}); err != nil {
+		t.Fatalf("token fixture should remain valid: %v", err)
+	}
 }
 
 func TestUsernameTaken(t *testing.T) {

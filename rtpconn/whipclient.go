@@ -55,6 +55,13 @@ func (c *WhipClient) SetUsername(username string) {
 	c.username = username
 }
 
+func (c *WhipClient) ResumeToken() string {
+	return ""
+}
+
+func (c *WhipClient) SetResumeToken(string) {
+}
+
 func (c *WhipClient) Permissions() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

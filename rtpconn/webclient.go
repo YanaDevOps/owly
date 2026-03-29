@@ -82,6 +82,7 @@ type webClient struct {
 	addr        net.Addr
 	id          string
 	username    string
+	resumeToken string
 	permissions []string
 	data        map[string]interface{}
 	requested   map[string][]string
@@ -115,6 +116,14 @@ func (c *webClient) SetUsername(username string) {
 	c.username = username
 }
 
+func (c *webClient) ResumeToken() string {
+	return c.resumeToken
+}
+
+func (c *webClient) SetResumeToken(resumeToken string) {
+	c.resumeToken = resumeToken
+}
+
 func (c *webClient) Permissions() []string {
 	return c.permissions
 }
@@ -144,6 +153,7 @@ type clientMessage struct {
 	Source           string                   `json:"source,omitempty"`
 	Dest             string                   `json:"dest,omitempty"`
 	Username         *string                  `json:"username,omitempty"`
+	ResumeToken      string                   `json:"resumeToken,omitempty"`
 	Password         string                   `json:"password,omitempty"`
 	Token            string                   `json:"token,omitempty"`
 	Privileged       bool                     `json:"privileged,omitempty"`
@@ -233,6 +243,8 @@ func addUpConn(c *webClient, id, label string, offer string) (*rtpUpConnection, 
 	})
 
 	conn.pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		log.Printf("[rtc-up] ICE state client=%s conn=%s state=%s",
+			c.id, id, state.String())
 		if state == webrtc.ICEConnectionStateFailed {
 			c.action(connectionFailedAction{id: id})
 		}
@@ -342,6 +354,8 @@ func addDownConn(c *webClient, remote conn.Up) (*rtpDownConnection, bool, error)
 	})
 
 	down.pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		log.Printf("[rtc-down] ICE state client=%s conn=%s state=%s",
+			c.id, down.id, state.String())
 		if state == webrtc.ICEConnectionStateFailed {
 			c.action(connectionFailedAction{id: down.id})
 		}
@@ -1038,8 +1052,8 @@ func clientLoop(c *webClient, ws *websocket.Conn, versionError bool) error {
 	readTime := time.Now()
 	// Keep dead peers from lingering too long without making live mobile
 	// clients flap because of short timer stalls, proxy jitter or weak radio.
-	deadClientTimeout := 30 * time.Second
-	pingAfterIdle := 10 * time.Second
+	deadClientTimeout := 120 * time.Second
+	pingAfterIdle := 20 * time.Second
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -1093,9 +1107,9 @@ func clientLoop(c *webClient, ws *websocket.Conn, versionError bool) error {
 				}
 			}
 		case <-ticker.C:
-			// Keep this timeout conservative: short enough to evict dead peers
-			// promptly, long enough to survive short-lived mobile timer
-			// throttling and network stalls.
+				// Keep this timeout above the client-side liveness window so
+				// mobile browsers have time to respond after timer throttling,
+				// radio stalls, or temporary backgrounding.
 			idle := time.Since(readTime)
 			if idle > deadClientTimeout {
 				log.Printf("[ws-loop] Dead client timeout client=%s remote=%s idle=%v timeout=%v",
@@ -1273,6 +1287,7 @@ func handleAction(c *webClient, a any) error {
 			Kind:             a.kind,
 			Group:            a.group,
 			Username:         &username,
+			ResumeToken:      c.resumeToken,
 			Permissions:      perms,
 			Status:           status,
 			Data:             data,
@@ -1317,6 +1332,7 @@ func handleAction(c *webClient, a any) error {
 			Kind:             "change",
 			Group:            g.Name(),
 			Username:         &username,
+			ResumeToken:      c.resumeToken,
 			Permissions:      perms,
 			Status:           &status,
 			RTCConfiguration: ice.ICEConfiguration(),
@@ -1511,9 +1527,10 @@ func handleClientMessage(c *webClient, m clientMessage) error {
 		c.data = m.Data
 		g, err := group.AddClient(m.Group, c,
 			group.ClientCredentials{
-				Username: m.Username,
-				Password: m.Password,
-				Token:    m.Token,
+				Username:    m.Username,
+				Password:    m.Password,
+				Token:       m.Token,
+				ResumeToken: m.ResumeToken,
 			},
 		)
 		if err != nil {

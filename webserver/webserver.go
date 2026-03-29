@@ -615,28 +615,7 @@ func CheckOrigin(w http.ResponseWriter, r *http.Request, admin bool) bool {
 	}
 	origin := origins[0]
 
-	ok := false
-	o, err := url.Parse(origin)
-	if err == nil && strings.EqualFold(o.Host, r.Host) {
-		ok = true
-	} else {
-		conf, err := group.GetConfiguration()
-		if err != nil {
-			return false
-		}
-
-		allow := conf.AllowOrigin
-		if admin {
-			allow = conf.AllowAdminOrigin
-		}
-		for _, a := range allow {
-			if strings.EqualFold(origin, a) {
-				ok = true
-				break
-			}
-		}
-	}
-
+	ok := originAllowed(origin, r.Host, admin)
 	if !ok {
 		return false
 	}
@@ -645,6 +624,60 @@ func CheckOrigin(w http.ResponseWriter, r *http.Request, admin bool) bool {
 		w.Header().Add("Access-Control-Allow-Origin", origin)
 	}
 	return true
+}
+
+func originAllowed(origin, host string, admin bool) bool {
+	o, err := url.Parse(origin)
+	if err == nil && strings.EqualFold(o.Host, host) {
+		return true
+	}
+
+	conf, err := group.GetConfiguration()
+	if err != nil {
+		return false
+	}
+
+	allow := conf.AllowOrigin
+	if admin {
+		allow = conf.AllowAdminOrigin
+	}
+	for _, a := range allow {
+		if strings.EqualFold(origin, a) {
+			return true
+		}
+	}
+	return false
+}
+
+func requireSafeRequestOrigin(w http.ResponseWriter, r *http.Request, admin bool) bool {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if originAllowed(origin, r.Host, admin) {
+			return true
+		}
+		http.Error(w, "cross-origin request forbidden", http.StatusForbidden)
+		return false
+	}
+
+	if referer := r.Header.Get("Referer"); referer != "" {
+		u, err := url.Parse(referer)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			http.Error(w, "invalid referer", http.StatusForbidden)
+			return false
+		}
+		if originAllowed(u.Scheme+"://"+u.Host, r.Host, admin) {
+			return true
+		}
+		http.Error(w, "cross-origin request forbidden", http.StatusForbidden)
+		return false
+	}
+
+	switch strings.ToLower(r.Header.Get("Sec-Fetch-Site")) {
+	case "", "same-origin", "none":
+		return true
+	default:
+		http.Error(w, "cross-origin request forbidden", http.StatusForbidden)
+		return false
+	}
 }
 
 var wsUpgrader = websocket.Upgrader{
@@ -774,6 +807,9 @@ func handleGroupAction(w http.ResponseWriter, r *http.Request, group string) {
 		methodNotAllowed(w, "POST")
 		return
 	}
+	if !requireSafeRequestOrigin(w, r, true) {
+		return
+	}
 
 	err := r.ParseForm()
 	if err != nil {
@@ -822,8 +858,8 @@ func checkGroupPermissions(w http.ResponseWriter, r *http.Request, groupname str
 		return false
 	}
 
-	g := group.Get(groupname)
-	if g == nil {
+	g, err := group.Add(groupname, nil)
+	if err != nil || g == nil {
 		return false
 	}
 
@@ -867,13 +903,15 @@ func serveGroupRecordings(w http.ResponseWriter, r *http.Request, f *os.File, gr
 
 	w.Header().Set("content-type", "text/html; charset=utf-8")
 	w.Header().Set("cache-control", "no-cache")
+	cspHeader(w, "")
 
 	if r.Method == "HEAD" {
 		return
 	}
 
 	fmt.Fprintf(w, "<!DOCTYPE html>\n<html><head>\n")
-	fmt.Fprintf(w, "<title>Recordings for group %v</title>\n", group)
+	fmt.Fprintf(w, "<title>Recordings for group %v</title>\n",
+		html.EscapeString(group))
 	fmt.Fprintf(w, "<link rel=\"stylesheet\" type=\"text/css\" href=\"/common.css\"/>")
 	fmt.Fprintf(w, "</head><body>\n")
 
@@ -883,7 +921,7 @@ func serveGroupRecordings(w http.ResponseWriter, r *http.Request, f *os.File, gr
 			continue
 		}
 		fmt.Fprintf(w, "<tr><td><a href=\"./%v\">%v</a></td><td>%d</td>",
-			html.EscapeString(fi.Name()),
+			url.PathEscape(fi.Name()),
 			html.EscapeString(fi.Name()),
 			fi.Size(),
 		)
@@ -892,7 +930,7 @@ func serveGroupRecordings(w http.ResponseWriter, r *http.Request, f *os.File, gr
 				"<input type=\"hidden\" name=\"filename\" value=\"%v\">"+
 				"<button type=\"submit\" name=\"q\" value=\"delete\">Delete</button>"+
 				"</form></td></tr>\n",
-			url.PathEscape(group), fi.Name())
+			url.PathEscape(group), html.EscapeString(fi.Name()))
 	}
 	fmt.Fprintf(w, "</table>\n")
 	fmt.Fprintf(w, "</body></html>\n")

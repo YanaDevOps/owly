@@ -102,6 +102,7 @@ function buildClientIdApi({
     extractFunction('newRandomId'),
     extractConst('clientIdStorageKey'),
     extractConst('clientUsernameStorageKey'),
+    extractConst('clientResumeTokenStorageKey'),
     extractConst('clientTabKeyWindowPrefix'),
     extractFunction('isPersistentClientId'),
     extractFunction('getPersistentClientTabKey'),
@@ -110,7 +111,9 @@ function buildClientIdApi({
     extractFunction('setPersistentClientValue'),
     extractFunction('getPersistentClientId'),
     extractFunction('getPersistentClientUsername'),
+    extractFunction('getPersistentClientResumeToken'),
     extractFunction('rememberPersistentClientUsername'),
+    extractFunction('rememberPersistentClientResumeToken'),
     extractFunction('rotatePersistentClientId'),
     extractFunction('ensurePersistentClientIdForUsername'),
     'this.__exports = {',
@@ -118,9 +121,12 @@ function buildClientIdApi({
     '  getPersistentClientTabKey,',
     '  ensurePersistentClientIdForUsername,',
     '  getPersistentClientUsername,',
+    '  getPersistentClientResumeToken,',
     '  rememberPersistentClientUsername,',
+    '  rememberPersistentClientResumeToken,',
     '  clientIdStorageKey,',
     '  clientUsernameStorageKey,',
+    '  clientResumeTokenStorageKey,',
     '  getWindowName() { return window.name; },',
     '};',
   ].join('\n\n');
@@ -192,6 +198,18 @@ test('username change rotates client id within the same tab', () => {
   assert.equal(secondId, firstId);
   assert.notEqual(thirdId, firstId);
   assert.equal(api.getPersistentClientUsername(), 'bob');
+});
+
+test('username change clears stored resume token within the same tab', () => {
+  const api = buildClientIdApi();
+
+  api.ensurePersistentClientIdForUsername('alice');
+  api.rememberPersistentClientResumeToken('resume-token-1');
+  assert.equal(api.getPersistentClientResumeToken(), 'resume-token-1');
+
+  api.ensurePersistentClientIdForUsername('bob');
+
+  assert.equal(api.getPersistentClientResumeToken(), null);
 });
 
 test('getPersistentClientId falls back to random when storage is unavailable', () => {

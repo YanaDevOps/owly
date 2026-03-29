@@ -138,7 +138,13 @@ func getJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 func apiCORS(w http.ResponseWriter, r *http.Request, methods string) bool {
-	CheckOrigin(w, r, true)
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if !CheckOrigin(w, r, true) {
+			http.Error(w, "cross-origin request forbidden",
+				http.StatusForbidden)
+			return true
+		}
+	}
 	if r.Method == "OPTIONS" {
 		w.Header().Set("Access-Control-Allow-Methods",
 			"OPTIONS, "+methods)
@@ -146,6 +152,11 @@ func apiCORS(w http.ResponseWriter, r *http.Request, methods string) bool {
 			"Authorization, Content-Type",
 		)
 		return true
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if !requireSafeRequestOrigin(w, r, true) {
+			return true
+		}
 	}
 	return false
 }

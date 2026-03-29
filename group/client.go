@@ -127,10 +127,11 @@ type ClientPattern struct {
 }
 
 type ClientCredentials struct {
-	System   bool
-	Username *string
-	Password string
-	Token    string
+	System      bool
+	Username    *string
+	Password    string
+	Token       string
+	ResumeToken string
 }
 
 type Client interface {
@@ -139,6 +140,8 @@ type Client interface {
 	Id() string
 	Username() string
 	SetUsername(string)
+	ResumeToken() string
+	SetResumeToken(string)
 	Permissions() []string
 	SetPermissions([]string)
 	Data() map[string]interface{}
