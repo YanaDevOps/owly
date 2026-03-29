@@ -7375,6 +7375,17 @@ function replaceCameraStream() {
     return Promise.resolve();
 }
 
+function createReplacementUpStream(localId, replaceId) {
+    const c = newUpStream(localId);
+    // addLocalMediaInternal closes the old up-stream before creating the
+    // replacement, so preserve the original stream id explicitly. Without
+    // this, the next offer can lose replace=<old id> and remote viewers may
+    // keep the old frozen camera peer alive.
+    if (replaceId && !c.replace)
+        c.replace = replaceId;
+    return c;
+}
+
 async function addLocalMediaInternal(localId, token, hadLocalPresentation) {
     if (!serverConnection)
         return null;
@@ -7385,6 +7396,7 @@ async function addLocalMediaInternal(localId, token, hadLocalPresentation) {
     const video = settings.cameraOff ? false : buildVideoConstraints(settings);
 
     const old = serverConnection.findByLocalId(localId);
+    const replaceId = old && old.id ? old.id : '';
     if (old) {
         try {
             await releaseReplacedLocalMedia(old);
@@ -7429,7 +7441,7 @@ async function addLocalMediaInternal(localId, token, hadLocalPresentation) {
     let c;
 
     try {
-        c = newUpStream(localId);
+        c = createReplacementUpStream(localId, replaceId);
     } catch (e) {
         stopStream(stream);
         console.log(e);

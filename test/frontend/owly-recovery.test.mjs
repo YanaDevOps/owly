@@ -664,6 +664,28 @@ function buildCameraToggleApi() {
   };
 }
 
+function buildReplacementUpStreamApi() {
+  const calls = [];
+  const context = vm.createContext({
+    newUpStream(localId) {
+      const stream = { localId, replace: null };
+      calls.push(stream);
+      return stream;
+    },
+  });
+
+  const snippet = [
+    extractFunction('createReplacementUpStream'),
+    'this.__exports = { createReplacementUpStream };',
+  ].join('\n\n');
+
+  vm.runInContext(snippet, context);
+  return {
+    ...context.__exports,
+    calls,
+  };
+}
+
 function buildSyncContainerApi() {
   const context = vm.createContext({
     clearPeerPresentation() {},
@@ -1018,6 +1040,16 @@ test('startCameraTrackInSession uses full camera replacement and restores video'
   assert.equal(api.calls.replaceCameraStream, 1);
   assert.deepEqual(api.calls.setLocalCameraOff, [[false, true]]);
   assert.deepEqual(api.calls.refreshLocalCameraUi, ['camera-1']);
+});
+
+test('createReplacementUpStream preserves replace id after local camera teardown', () => {
+  const api = buildReplacementUpStreamApi();
+
+  const replacement = api.createReplacementUpStream('camera-1', 'old-up-id');
+
+  assert.equal(api.calls.length, 1);
+  assert.equal(api.calls[0].localId, 'camera-1');
+  assert.equal(replacement.replace, 'old-up-id');
 });
 
 test('syncContainerChildren removes stale peers that are no longer active', () => {
