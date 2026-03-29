@@ -2192,6 +2192,8 @@ function getConferencePlaceholderStatus(participant) {
     }
     const camera = streams.camera;
     if (camera) {
+        if (camera.video !== true && camera.audio !== true)
+            return 'Media off';
         if (camera.video === false)
             return 'Camera off';
         if (camera.video)
@@ -4807,9 +4809,14 @@ getButtonElement('presentbutton').onclick = async function(e) {
     // button a second time before the stream is set up and the button hidden.
     button.disabled = true;
     try {
-        const id = findUpMedia('camera');
-        if (!id)
+        const local = findUpMedia('camera');
+        if (!local) {
             await addLocalMedia();
+        } else if (!isActiveLocalPresentationStream(local)) {
+            await runLocalCameraOperation(
+                token => startLocalPresentationInSession(local, token),
+            );
+        }
     } finally {
         button.disabled = false;
     }
@@ -4864,7 +4871,7 @@ function setButtonsVisibility() {
     // User can chat if they have 'message' or 'present' permission
     const canChat = permissions.indexOf('message') >= 0 || permissions.indexOf('present') >= 0;
     const localStream = findUpMedia('camera');
-    const local = !!localStream;
+    const local = isActiveLocalPresentationStream(localStream);
     const localVideoEnabled = !!(localStream && hasVideoTrack(localStream.stream));
     const mediacount = getPeerCount();
     const sharing = !!findUpMedia('screenshare');
@@ -5012,6 +5019,14 @@ function hasActiveAudioTrack(stream) {
     return !!(stream && stream.getAudioTracks().some(t => t.readyState !== 'ended'));
 }
 
+function hasActivePresentationTracks(stream) {
+    return hasActiveAudioTrack(stream) || hasVideoTrack(stream);
+}
+
+function isActiveLocalPresentationStream(c) {
+    return !!(c && c.label === 'camera' && c.stream && hasActivePresentationTracks(c.stream));
+}
+
 function refreshLocalCameraUi(c) {
     if (!c)
         return;
@@ -5087,7 +5102,7 @@ async function stopCameraTrackInSession(c) {
     return !hasVideoTrack(c.stream);
 }
 
-async function startCameraTrackInSession(c) {
+async function startCameraTrackInSession(c, token) {
     if (!c || !c.stream)
         return false;
     const sourceStream = getCameraSourceStream(c);
@@ -5109,6 +5124,11 @@ async function startCameraTrackInSession(c) {
         return false;
     }
 
+    if (token !== undefined && !isCurrentLocalCameraOperation(token)) {
+        stopStream(videoStream);
+        return false;
+    }
+
     const nextTrack = videoStream.getVideoTracks().find(
         t => t.readyState !== 'ended',
     );
@@ -5122,6 +5142,95 @@ async function startCameraTrackInSession(c) {
     await setFilter(c);
     refreshLocalCameraUi(c);
     return hasVideoTrack(c.stream);
+}
+
+async function stopLocalPresentationInSession(c, token) {
+    if (!c || !c.stream)
+        return false;
+
+    let sourceStream = getCameraSourceStream(c);
+    const liveTracks = sourceStream.getTracks().filter(
+        t => t.readyState !== 'ended' &&
+            (t.kind === 'audio' || t.kind === 'video'),
+    );
+    if (!liveTracks.length) {
+        await setFilter(c);
+        refreshLocalCameraUi(c);
+        return true;
+    }
+
+    if (c.userdata.filter)
+        await removeFilter(c, {suppressSync: true});
+    if (token !== undefined && !isCurrentLocalCameraOperation(token))
+        return false;
+
+    sourceStream = getCameraSourceStream(c);
+    Array.from(sourceStream.getTracks()).forEach(t => {
+        t.onended = null;
+        sourceStream.removeTrack(t);
+        t.stop();
+    });
+
+    if (token !== undefined && !isCurrentLocalCameraOperation(token))
+        return false;
+
+    await setFilter(c);
+    refreshLocalCameraUi(c);
+    return !hasActivePresentationTracks(c.stream);
+}
+
+async function startLocalPresentationInSession(c, token) {
+    if (!c || !c.stream)
+        return false;
+
+    let sourceStream = getCameraSourceStream(c);
+    if (hasActivePresentationTracks(sourceStream)) {
+        await setFilter(c);
+        refreshLocalCameraUi(c);
+        return true;
+    }
+
+    const settings = getSettings();
+    const audio = buildAudioConstraints(settings);
+    const video = settings.cameraOff ? false : buildVideoConstraints(settings);
+    if (!audio && !video) {
+        displayMessage('Please enable a camera or microphone first.');
+        return false;
+    }
+
+    let mediaStream = null;
+    try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+            audio: audio,
+            video: video,
+        });
+    } catch (e) {
+        displayError(e);
+        return false;
+    }
+
+    if (token !== undefined && !isCurrentLocalCameraOperation(token)) {
+        stopStream(mediaStream);
+        return false;
+    }
+
+    const liveTracks = mediaStream.getTracks().filter(
+        t => t.readyState !== 'ended' &&
+            (t.kind === 'audio' || t.kind === 'video'),
+    );
+    if (!liveTracks.length) {
+        stopStream(mediaStream);
+        return false;
+    }
+
+    setMediaChoices(true);
+    sourceStream = getCameraSourceStream(c);
+    liveTracks.forEach(track => {
+        sourceStream.addTrack(track);
+    });
+    await setFilter(c);
+    refreshLocalCameraUi(c);
+    return hasActivePresentationTracks(c.stream);
 }
 
 getSelectElement('videoselect').onchange = function(e) {
@@ -5184,7 +5293,7 @@ getInputElement('hqaudiobox').onchange = function(e) {
 document.getElementById('mutebutton').onclick = function(e) {
     e.preventDefault();
     let localMute = getSettings().localMute;
-    if (localMute && !findUpMedia('camera')) {
+    if (localMute && !isActiveLocalPresentationStream(findUpMedia('camera'))) {
         displayMessage('Please use Enable to enable your camera or microphone.');
     } else {
         localMute = !localMute;
@@ -5195,7 +5304,7 @@ document.getElementById('mutebutton').onclick = function(e) {
 document.getElementById('camerabutton').onclick = async function(e) {
     e.preventDefault();
     const local = findUpMedia('camera');
-    if (!local) {
+    if (!isActiveLocalPresentationStream(local)) {
         displayMessage('Please use Enable to enable your camera or microphone.');
         return;
     }
@@ -5289,11 +5398,13 @@ getSelectElement('filterselect').onchange = async function(_e) {
             c.userdata.filterDefinition = filter;
         else
             delete c.userdata.filterDefinition;
-        try {
-            await replaceUpStream(c);
-        } catch (e) {
-            console.error('[Filter] Failed to replace stream after filter change:', e);
-            displayError(e);
+        if (isActiveLocalPresentationStream(c)) {
+            try {
+                await replaceUpStream(c);
+            } catch (e) {
+                console.error('[Filter] Failed to replace stream after filter change:', e);
+                displayError(e);
+            }
         }
     }
 
@@ -7506,7 +7617,7 @@ async function replaceUpStreams(label) {
  */
 function replaceCameraStream() {
     const c = findUpMedia('camera');
-    if (c)
+    if (c && isActiveLocalPresentationStream(c))
         return addLocalMedia(c.localId);
     return Promise.resolve();
 }
@@ -7701,7 +7812,7 @@ async function addFileMedia(file) {
     };
     await setUpStream(c, stream);
 
-    const presenting = !!findUpMedia('camera');
+    const presenting = isActiveLocalPresentationStream(findUpMedia('camera'));
     const muted = getSettings().localMute;
     if (presenting && !muted) {
         setLocalMute(true, true);
@@ -7784,7 +7895,13 @@ function closeLocalPresentation(label = 'camera') {
     return runLocalCameraOperation(async token => {
         if (!isCurrentLocalCameraOperation(token) || !serverConnection)
             return;
-        closeUpMedia(label);
+        if (label === 'camera') {
+            const c = findUpMedia('camera');
+            if (c)
+                await stopLocalPresentationInSession(c, token);
+        } else {
+            closeUpMedia(label);
+        }
         setButtonsVisibility();
     });
 }
@@ -8621,8 +8738,17 @@ function updatePeerVideoState(c, peer) {
 
     if (initials)
         initials.textContent = getNameInitials(displayName, c && c.up ? 'Y' : 'P');
-    if (statusText)
-        statusText.textContent = c && c.label === 'camera' ? 'Camera off' : 'Audio only';
+    if (statusText) {
+        const mediaOff = !!(
+            c &&
+            c.label === 'camera' &&
+            !hasActiveAudioTrack(c.stream) &&
+            !hasVideoTrack(c.stream)
+        );
+        statusText.textContent = mediaOff ?
+            'Media off' :
+            (c && c.label === 'camera' ? 'Camera off' : 'Audio only');
+    }
     placeholder.setAttribute('aria-hidden', noVideo ? 'false' : 'true');
 }
 

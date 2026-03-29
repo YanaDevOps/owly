@@ -766,6 +766,7 @@ function buildCameraToggleApi() {
     setFilter: [],
     getUserMedia: [],
     stopStream: [],
+    setMediaChoices: [],
   };
   class FilterStub {}
   const audioTrack = new FakeTrack('audio', 'audio-1');
@@ -777,7 +778,14 @@ function buildCameraToggleApi() {
       mediaDevices: {
         async getUserMedia(constraints) {
           calls.getUserMedia.push(constraints);
-          return new FakeStream([new FakeTrack('video', 'new-video')]);
+          const tracks = [];
+          if (constraints.audio) {
+            tracks.push(new FakeTrack('audio', 'new-audio'));
+          }
+          if (constraints.video) {
+            tracks.push(new FakeTrack('video', 'new-video'));
+          }
+          return new FakeStream(tracks);
         },
       },
     },
@@ -805,11 +813,16 @@ function buildCameraToggleApi() {
     stopStream(stream) {
       calls.stopStream.push(stream);
     },
+    setMediaChoices(done) {
+      calls.setMediaChoices.push(done);
+    },
     getSettings() {
       return {
+        audio: 'mic-1',
         video: '',
         resolution: null,
         blackboardMode: false,
+        cameraOff: false,
       };
     },
     async removeFilter(c, options = {}) {
@@ -840,14 +853,20 @@ function buildCameraToggleApi() {
   });
 
   const snippet = [
+    extractFunction('buildAudioConstraints'),
     extractFunction('buildVideoConstraints'),
     extractFunction('hasActiveAudioTrack'),
+    extractFunction('hasActivePresentationTracks'),
     extractFunction('getCameraSourceStream'),
     extractFunction('stopCameraTrackInSession'),
     extractFunction('startCameraTrackInSession'),
+    extractFunction('stopLocalPresentationInSession'),
+    extractFunction('startLocalPresentationInSession'),
     'this.__exports = {',
       '  stopCameraTrackInSession,',
       '  startCameraTrackInSession,',
+      '  stopLocalPresentationInSession,',
+      '  startLocalPresentationInSession,',
     '};',
   ].join('\n\n');
 
@@ -855,8 +874,15 @@ function buildCameraToggleApi() {
   return {
     ...context.__exports,
     calls,
-    makeCamera({ withVideo, withFilter = false }) {
-      const source = new FakeStream(withVideo ? [audioTrack, liveVideoTrack] : [audioTrack]);
+    makeCamera({ withVideo, withAudio = true, withFilter = false }) {
+      const tracks = [];
+      if (withAudio) {
+        tracks.push(audioTrack);
+      }
+      if (withVideo) {
+        tracks.push(liveVideoTrack);
+      }
+      const source = new FakeStream(tracks);
       const stream = withFilter && withVideo ?
         new FakeStream([audioTrack, new FakeTrack('video', 'filtered-video')]) :
         source;
@@ -913,6 +939,148 @@ function buildSyncContainerApi() {
 
   vm.runInContext(snippet, context);
   return context.__exports;
+}
+
+function buildButtonsVisibilityApi() {
+  const calls = {
+    setVisibility: [],
+    setLocalCameraOff: [],
+    updateStageBadge: 0,
+  };
+
+  const context = vm.createContext({
+    console,
+    serverConnection: {
+      socket: true,
+      permissions: ['present'],
+    },
+    navigator: {
+      mediaDevices: {
+        getUserMedia() {},
+        getDisplayMedia() {},
+      },
+    },
+    RTCPeerConnection: function RTCPeerConnection() {},
+    document: {
+      getElementById(id) {
+        if (id === 'sharebutton')
+          return null;
+        return { classList: makeClassList(), querySelector() { return null; } };
+      },
+    },
+    findUpMedia() {
+      return context.__cameraStream;
+    },
+    findUpMediaCalls: 0,
+    getPeerCount() {
+      return 0;
+    },
+    getSettings() {
+      return { cameraOff: false };
+    },
+    hasVideoTrack(stream) {
+      return !!(
+        stream &&
+        stream.getTracks().some(
+          track => track.kind === 'video' && track.readyState !== 'ended',
+        )
+      );
+    },
+    setVisibility(id, visible) {
+      calls.setVisibility.push([id, visible]);
+    },
+    setLocalCameraOff(value, reflect) {
+      calls.setLocalCameraOff.push([value, reflect]);
+    },
+    updateStageBadge() {
+      calls.updateStageBadge += 1;
+    },
+  });
+
+  const snippet = [
+    extractFunction('hasActiveAudioTrack'),
+    extractFunction('hasActivePresentationTracks'),
+    extractFunction('isActiveLocalPresentationStream'),
+    extractFunction('setButtonsVisibility'),
+    'this.__exports = {',
+    '  setButtonsVisibility,',
+    '  setCameraStream(value) { __cameraStream = value; },',
+    '};',
+  ].join('\n\n');
+
+  context.__cameraStream = null;
+  vm.runInContext(snippet, context);
+
+  return {
+    ...context.__exports,
+    calls,
+  };
+}
+
+function buildConferencePlaceholderStatusApi() {
+  const context = vm.createContext({
+    console,
+    participantPresence: new Map(),
+    getParticipantLiveStreamSummary() {
+      return {};
+    },
+  });
+
+  const snippet = [
+    'let participantPresence = new Map();',
+    extractFunction('getConferencePlaceholderStatus'),
+    'this.__exports = { getConferencePlaceholderStatus };',
+  ].join('\n\n');
+
+  vm.runInContext(snippet, context);
+  return context.__exports;
+}
+
+function buildReplaceCameraStreamApi() {
+  const calls = {
+    addLocalMedia: [],
+  };
+
+  const context = vm.createContext({
+    __cameraStream: null,
+    findUpMedia() {
+      return context.__cameraStream;
+    },
+    addLocalMedia(localId) {
+      calls.addLocalMedia.push(localId);
+      return Promise.resolve(localId);
+    },
+    hasActiveAudioTrack(stream) {
+      return !!(
+        stream &&
+        stream.getAudioTracks().some(track => track.readyState !== 'ended')
+      );
+    },
+    hasVideoTrack(stream) {
+      return !!(
+        stream &&
+        stream.getTracks().some(
+          track => track.kind === 'video' && track.readyState !== 'ended',
+        )
+      );
+    },
+  });
+
+  const snippet = [
+    extractFunction('hasActivePresentationTracks'),
+    extractFunction('isActiveLocalPresentationStream'),
+    extractFunction('replaceCameraStream'),
+    'this.__exports = {',
+    '  replaceCameraStream,',
+    '  setCameraStream(value) { __cameraStream = value; },',
+    '};',
+  ].join('\n\n');
+
+  vm.runInContext(snippet, context);
+  return {
+    ...context.__exports,
+    calls,
+  };
 }
 
 class FakeContainerNode {
@@ -1309,6 +1477,34 @@ test('startCameraTrackInSession requests only a new video track and restores cam
   assert.equal(original.userdata.sourceStream.getVideoTracks().length, 1);
 });
 
+test('stopLocalPresentationInSession removes audio and video without closing the camera session', async () => {
+  const api = buildCameraToggleApi();
+  const original = api.makeCamera({ withVideo: true, withAudio: true });
+
+  const ok = await api.stopLocalPresentationInSession(original);
+
+  assert.equal(ok, true);
+  assert.deepEqual(api.calls.refreshLocalCameraUi, ['camera-1']);
+  assert.deepEqual(api.calls.setLocalCameraOff, []);
+  assert.equal(original.userdata.sourceStream.getTracks().length, 0);
+});
+
+test('startLocalPresentationInSession restores a disabled camera session in place', async () => {
+  const api = buildCameraToggleApi();
+  const original = api.makeCamera({ withVideo: false, withAudio: false });
+
+  const ok = await api.startLocalPresentationInSession(original);
+
+  assert.equal(ok, true);
+  assert.equal(api.calls.getUserMedia.length, 1);
+  assert.notEqual(api.calls.getUserMedia[0].audio, false);
+  assert.notEqual(api.calls.getUserMedia[0].video, false);
+  assert.deepEqual(api.calls.setMediaChoices, [true]);
+  assert.deepEqual(api.calls.refreshLocalCameraUi, ['camera-1']);
+  assert.equal(original.userdata.sourceStream.getAudioTracks().length, 1);
+  assert.equal(original.userdata.sourceStream.getVideoTracks().length, 1);
+});
+
 test('stopCameraTrackInSession removes active filter before dropping source video', async () => {
   const api = buildCameraToggleApi();
   const original = api.makeCamera({ withVideo: true, withFilter: true });
@@ -1346,6 +1542,60 @@ test('syncContainerChildren removes stale peers that are no longer active', () =
 
   assert.deepEqual(container.children.map(child => child.id), ['peer-b', 'peer-a']);
   assert.equal(stale.parentElement, null);
+});
+
+test('setButtonsVisibility treats an empty local camera session as disabled presentation', () => {
+  const api = buildButtonsVisibilityApi();
+  api.setCameraStream({
+    label: 'camera',
+    stream: new FakeStream([]),
+  });
+
+  api.setButtonsVisibility();
+
+  assert.deepEqual(api.calls.setVisibility, [
+    ['presentbutton', true],
+    ['unpresentbutton', false],
+    ['mutebutton', true],
+    ['camerabutton', false],
+    ['sharebutton', true],
+    ['chatbutton', true],
+    ['workspace-toggle-mobile', true],
+    ['mediaoptions', true],
+    ['sendform', true],
+    ['simulcastform', true],
+    ['inputform', true],
+    ['inputbutton', true],
+    ['no-media-message', false],
+  ]);
+  assert.deepEqual(api.calls.setLocalCameraOff, [[false, false]]);
+  assert.equal(api.calls.updateStageBadge, 1);
+});
+
+test('getConferencePlaceholderStatus reports media off for an intentionally disabled camera session', () => {
+  const api = buildConferencePlaceholderStatusApi();
+
+  assert.equal(api.getConferencePlaceholderStatus({
+    id: 'user-1',
+    userinfo: {
+      streams: {
+        camera: {},
+      },
+    },
+  }), 'Media off');
+});
+
+test('replaceCameraStream is a no-op when the local camera session exists but is disabled', async () => {
+  const api = buildReplaceCameraStreamApi();
+  api.setCameraStream({
+    label: 'camera',
+    localId: 'camera-1',
+    stream: new FakeStream([]),
+  });
+
+  await api.replaceCameraStream();
+
+  assert.deepEqual(api.calls.addLocalMedia, []);
 });
 
 test('downstream replace clears stale media and marks participant reconnecting', () => {
