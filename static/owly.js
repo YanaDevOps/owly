@@ -5046,36 +5046,66 @@ async function stopCameraTrackInSession(c) {
         return false;
     }
 
-    const videoTracks = c.stream.getVideoTracks().filter(t => t.readyState !== 'ended');
+    let sourceStream = getCameraSourceStream(c);
+    const videoTracks = sourceStream.getVideoTracks().filter(
+        t => t.readyState !== 'ended',
+    );
     if (!videoTracks.length) {
         setLocalCameraOff(true, true);
+        await setFilter(c);
         refreshLocalCameraUi(c);
         return true;
     }
 
+    if (c.userdata.filter)
+        await removeFilter(c, {suppressSync: true});
+    sourceStream = getCameraSourceStream(c);
+    sourceStream.getVideoTracks().forEach(t => {
+        t.onended = null;
+        sourceStream.removeTrack(t);
+        t.stop();
+    });
     setLocalCameraOff(true, true);
-    await replaceCameraStream();
-    const current = findUpMedia('camera');
-    if (current)
-        refreshLocalCameraUi(current);
-    return !!(current && !hasVideoTrack(current.stream));
+    await setFilter(c);
+    refreshLocalCameraUi(c);
+    return !hasVideoTrack(c.stream);
 }
 
 async function startCameraTrackInSession(c) {
     if (!c || !c.stream)
         return false;
-    if (hasVideoTrack(c.stream)) {
+    const sourceStream = getCameraSourceStream(c);
+    if (hasVideoTrack(sourceStream)) {
         setLocalCameraOff(false, true);
+        await setFilter(c);
         refreshLocalCameraUi(c);
         return true;
     }
 
+    let videoStream = null;
+    try {
+        videoStream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: buildVideoConstraints(getSettings()),
+        });
+    } catch (e) {
+        displayError(e);
+        return false;
+    }
+
+    const nextTrack = videoStream.getVideoTracks().find(
+        t => t.readyState !== 'ended',
+    );
+    if (!nextTrack) {
+        stopStream(videoStream);
+        return false;
+    }
+
+    sourceStream.addTrack(nextTrack);
     setLocalCameraOff(false, true);
-    await replaceCameraStream();
-    const current = findUpMedia('camera');
-    if (current)
-        refreshLocalCameraUi(current);
-    return !!(current && hasVideoTrack(current.stream));
+    await setFilter(c);
+    refreshLocalCameraUi(c);
+    return hasVideoTrack(c.stream);
 }
 
 getSelectElement('videoselect').onchange = function(e) {
@@ -6233,7 +6263,8 @@ function setActivityDetectionPaused(paused) {
  *
  * @param {Stream} c
  */
-async function removeFilter(c) {
+async function removeFilter(c, options = {}) {
+    const suppressSync = !!options.suppressSync;
     const old = c.userdata.filter;
     if (!old)
         return;
@@ -6249,10 +6280,13 @@ async function removeFilter(c) {
         });
     }
 
+    c.userdata.sourceStream = old.inputStream;
     c.setStream(old.inputStream);
     await old.stop();
     c.userdata.filter = null;
     delete c.userdata.activeFilterDefinition;
+    if (!suppressSync && c.pc && c.pc.signalingState !== 'closed')
+        syncPublishedUpStream(c, old.inputStream);
 }
 
 /**
@@ -6261,12 +6295,26 @@ async function removeFilter(c) {
  * @param {Stream} c
  */
 async function setFilter(c) {
-    await removeFilter(c);
+    await removeFilter(c, {suppressSync: true});
 
-    if (!c.userdata.filterDefinition)
+    const sourceStream = getCameraSourceStream(c);
+    if (c.userdata)
+        c.userdata.sourceStream = sourceStream;
+
+    if (!c.userdata.filterDefinition) {
+        if (c.pc && c.pc.signalingState !== 'closed')
+            syncPublishedUpStream(c, sourceStream);
+        else
+            c.setStream(sourceStream);
         return;
-    if (!hasVideoTrack(c.stream))
+    }
+    if (!hasVideoTrack(sourceStream)) {
+        if (c.pc && c.pc.signalingState !== 'closed')
+            syncPublishedUpStream(c, sourceStream);
+        else
+            c.setStream(sourceStream);
         return;
+    }
 
     const expensiveFilter =
         c.userdata.filterDefinition === filters['background-blur'] ||
@@ -6291,16 +6339,19 @@ async function setFilter(c) {
         return;
     }
 
-    const filter = new Filter(c.stream, c.userdata.filterDefinition);
+    const filter = new Filter(sourceStream, c.userdata.filterDefinition);
     filter.userdata.ownerStream = c;
     if (filter.definition.frameRate) {
         filter.frameRate = getFilterFrameRate(filter.definition.frameRate);
         filter.lockFrameRate = true;
     }
     await filter.start();
-    c.setStream(filter.outputStream);
     c.userdata.filter = filter;
     c.userdata.activeFilterDefinition = filter.definition;
+    if (c.pc && c.pc.signalingState !== 'closed')
+        syncPublishedUpStream(c, filter.outputStream);
+    else
+        c.setStream(filter.outputStream);
 }
 
 const SEGMENTER_MODEL_PATH = '/third-party/tasks-vision/models/selfie_segmenter.tflite';
@@ -7113,6 +7164,176 @@ function doSimulcast() {
     }
 }
 
+function getCameraSourceStream(c) {
+    if (!c)
+        return null;
+    const filter = c.userdata && c.userdata.filter;
+    if (filter instanceof Filter && filter.inputStream)
+        return filter.inputStream;
+    if (c.userdata && c.userdata.sourceStream)
+        return c.userdata.sourceStream;
+    return c.stream;
+}
+
+function getActiveUpSenderCount(c) {
+    if (!c || !c.pc)
+        return 0;
+    let count = 0;
+    c.pc.getSenders().forEach(s => {
+        if (s.track)
+            count++;
+    });
+    return count;
+}
+
+function addUpTrackToConnection(c, stream, track) {
+    if (!c || !c.pc || !track)
+        return;
+
+    let exists = false;
+    c.pc.getSenders().forEach(s => {
+        if (s.track === track)
+            exists = true;
+    });
+    if (exists)
+        return;
+
+    debugLog('[addUpTrack] Adding track to', c.localId, 'kind:', track.kind, 'id:', track.id, 'enabled:', track.enabled);
+    const settings = getSettings();
+    if (c.label === 'camera') {
+        if (track.kind === 'audio') {
+            if (settings.localMute)
+                track.enabled = false;
+        } else if (track.kind === 'video' && settings.blackboardMode) {
+            track.contentHint = 'detail';
+        }
+    }
+
+    track.onended = _e => {
+        clearPublishedUpStreamTrackLifecycle(c);
+        c.close();
+    };
+
+    const encodings = [];
+    const simulcast = c.label !== 'screenshare' && doSimulcast();
+    if (track.kind === 'video') {
+        const bps = getMaxVideoThroughput(c);
+        if (simulcast) {
+            encodings.push({
+                rid: 'h',
+                maxBitrate: bps || unlimitedRate,
+            });
+            encodings.push({
+                rid: 'l',
+                scaleResolutionDownBy: 2,
+                maxBitrate: simulcastRate,
+            });
+        } else {
+            encodings.push({
+                maxBitrate: bps || unlimitedRate,
+            });
+        }
+    } else if (settings.hqaudio) {
+        encodings.push({
+            maxBitrate: hqAudioRate,
+        });
+    }
+
+    const tr = c.pc.addTransceiver(track, {
+        direction: 'sendonly',
+        streams: stream ? [stream] : [],
+        sendEncodings: encodings,
+    });
+
+    try {
+        const p = tr.sender.getParameters();
+        if (!p.encodings) {
+            p.encodings = encodings;
+            tr.sender.setParameters(p);
+        }
+    } catch {
+        // Ignore
+    }
+}
+
+function removeUpTrackFromConnection(c, track) {
+    if (!c || !c.pc || !track)
+        return;
+    let sender = null;
+    c.pc.getSenders().forEach(s => {
+        if (s.track === track)
+            sender = s;
+    });
+    if (sender) {
+        c.pc.removeTrack(sender);
+    } else {
+        console.warn('Removing unknown track');
+    }
+}
+
+function clearPublishedUpStreamTrackLifecycle(c) {
+    if (!c || !c.userdata)
+        return;
+    const lifecycle = c.userdata.publishedStreamLifecycle;
+    if (!lifecycle || !lifecycle.stream)
+        return;
+    if (lifecycle.stream.onaddtrack === lifecycle.onaddtrack)
+        lifecycle.stream.onaddtrack = null;
+    if (lifecycle.stream.onremovetrack === lifecycle.onremovetrack)
+        lifecycle.stream.onremovetrack = null;
+    delete c.userdata.publishedStreamLifecycle;
+}
+
+function bindPublishedUpStreamTrackLifecycle(c, stream) {
+    if (!c || !stream || !c.userdata)
+        return;
+
+    clearPublishedUpStreamTrackLifecycle(c);
+
+    const onaddtrack = function(e) {
+        addUpTrackToConnection(c, stream, e.track);
+    };
+
+    const onremovetrack = function(e) {
+        removeUpTrackFromConnection(c, e.track);
+        if (!getActiveUpSenderCount(c)) {
+            clearPublishedUpStreamTrackLifecycle(c);
+            c.close();
+        }
+    };
+
+    stream.onaddtrack = onaddtrack;
+    stream.onremovetrack = onremovetrack;
+    c.userdata.publishedStreamLifecycle = {
+        stream,
+        onaddtrack,
+        onremovetrack,
+    };
+}
+
+function syncPublishedUpStream(c, stream) {
+    if (!c || !c.pc)
+        return;
+
+    clearPublishedUpStreamTrackLifecycle(c);
+    c.setStream(stream);
+
+    const nextTracks = stream ? stream.getTracks() : [];
+    const nextTrackSet = new Set(nextTracks);
+
+    c.pc.getSenders().forEach(s => {
+        if (s.track && !nextTrackSet.has(s.track))
+            c.pc.removeTrack(s);
+    });
+
+    nextTracks.forEach(track => {
+        addUpTrackToConnection(c, stream, track);
+    });
+
+    if (stream)
+        bindPublishedUpStreamTrackLifecycle(c, stream);
+}
+
 /**
  * Sets up c to send the given stream.  Some extra parameters are stored
  * in c.userdata.
@@ -7145,6 +7366,7 @@ async function setUpStream(c, stream) {
     }
     c.username = username || 'You';
     debugLog('[setUpStream] Set username for', c.localId, ':', c.username);
+    c.userdata.sourceStream = stream;
     c.setStream(stream);
 
     // set up the handler early, in case setFilter fails.
@@ -7155,10 +7377,11 @@ async function setUpStream(c, stream) {
         clearTransportRecovery(c);
 
         try {
-            await removeFilter(c);
+            await removeFilter(c, {suppressSync: true});
         } catch (e) {
             console.error('[setUpStream/onclose] removeFilter failed:', localId, e);
         }
+        clearPublishedUpStreamTrackLifecycle(c);
 
         if (!replace) {
             if (streamToStop)
@@ -7177,109 +7400,6 @@ async function setUpStream(c, stream) {
     };
 
     await setFilter(c);
-
-    /**
-     * @param {MediaStreamTrack} t
-     */
-    function addUpTrack(t) {
-        debugLog('[addUpTrack] Adding track to', c.localId, 'kind:', t.kind, 'id:', t.id, 'enabled:', t.enabled);
-        const settings = getSettings();
-        if (c.label === 'camera') {
-            if (t.kind === 'audio') {
-                if (settings.localMute)
-                    t.enabled = false;
-            } else if (t.kind === 'video') {
-                if (settings.blackboardMode) {
-                    t.contentHint = 'detail';
-                }
-            }
-        }
-        t.onended = _e => {
-            stream.onaddtrack = null;
-            stream.onremovetrack = null;
-            c.close();
-        };
-
-        const encodings = [];
-        const simulcast = c.label !== 'screenshare' && doSimulcast();
-        if (t.kind === 'video') {
-            const bps = getMaxVideoThroughput(c);
-            // Firefox doesn't like us setting the RID if we're not
-            // simulcasting.
-            if (simulcast) {
-                encodings.push({
-                    rid: 'h',
-                    maxBitrate: bps || unlimitedRate,
-                });
-                encodings.push({
-                    rid: 'l',
-                    scaleResolutionDownBy: 2,
-                    maxBitrate: simulcastRate,
-                });
-            } else {
-                encodings.push({
-                    maxBitrate: bps || unlimitedRate,
-                });
-            }
-        } else {
-            if (settings.hqaudio) {
-                encodings.push({
-                    maxBitrate: hqAudioRate,
-                });
-            }
-        }
-        const tr = c.pc.addTransceiver(t, {
-            direction: 'sendonly',
-            streams: [stream],
-            sendEncodings: encodings,
-        });
-
-        // Firefox before 110 does not implement sendEncodings, and
-        // requires this hack, which throws an exception on Chromium.
-        try {
-            const p = tr.sender.getParameters();
-            if (!p.encodings) {
-                p.encodings = encodings;
-                tr.sender.setParameters(p);
-            }
-        } catch {
-            // Ignore
-        }
-    }
-
-    // c.stream might be different from stream if there's a filter
-    c.stream.getTracks().forEach(addUpTrack);
-
-    stream.onaddtrack = function(e) {
-        addUpTrack(e.track);
-    };
-
-    stream.onremovetrack = function(e) {
-        const t = e.track;
-
-        /** @type {RTCRtpSender} */
-        let sender;
-        c.pc.getSenders().forEach(s => {
-            if (s.track === t)
-                sender = s;
-        });
-        if (sender) {
-            c.pc.removeTrack(sender);
-        } else {
-            console.warn('Removing unknown track');
-        }
-
-        let found = false;
-        c.pc.getSenders().forEach(s => {
-            if (s.track)
-                found = true;
-        });
-        if (!found) {
-            stream.onaddtrack = null;
-            stream.onremovetrack = null;
-            c.close();
-        }
-    };
 
     if (shouldCollectUpstreamStats()) {
         c.onstats = gotUpStats;
@@ -7300,7 +7420,7 @@ async function setUpStream(c, stream) {
 const replacingUpStreams = new Map();
 
 async function replaceUpStream(c) {
-    await removeFilter(c);
+    await removeFilter(c, {suppressSync: true});
     return replaceUpStreamWithStream(c, c.stream);
 }
 
@@ -7604,7 +7724,7 @@ async function releaseReplacedLocalMedia(c) {
     if (!c)
         return;
     const streamToStop = getUpStreamStopTarget(c);
-    await removeFilter(c);
+    await removeFilter(c, {suppressSync: true});
     c.close(true);
     if (streamToStop)
         stopStream(streamToStop);

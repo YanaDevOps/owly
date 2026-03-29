@@ -17,6 +17,7 @@ func readLoop(track *rtpUpTrack) {
 	writers := rtpWriterPool{track: track}
 	defer func() {
 		writers.close()
+		track.conn.removeTrack(track)
 		close(track.readerDone)
 	}()
 

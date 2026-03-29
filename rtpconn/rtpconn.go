@@ -525,6 +525,32 @@ func (up *rtpUpConnection) getTracks() []*rtpUpTrack {
 	return tracks
 }
 
+func (up *rtpUpConnection) removeTrack(track *rtpUpTrack) bool {
+	up.mu.Lock()
+	removed := false
+	for i, current := range up.tracks {
+		if current != track {
+			continue
+		}
+		up.tracks = append(up.tracks[:i], up.tracks[i+1:]...)
+		removed = true
+		break
+	}
+	closed := up.closed
+	client := up.client
+	up.mu.Unlock()
+
+	if !removed || closed || client == nil {
+		return removed
+	}
+
+	g := client.Group()
+	if g != nil {
+		pushConn(up, g, g.GetClients(client))
+	}
+	return true
+}
+
 func (up *rtpUpConnection) getReplace(reset bool) string {
 	up.mu.Lock()
 	defer up.mu.Unlock()

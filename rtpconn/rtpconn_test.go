@@ -54,3 +54,23 @@ func TestSadd(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveUpTrack(t *testing.T) {
+	up := &rtpUpConnection{}
+	t1 := &rtpUpTrack{conn: up}
+	t2 := &rtpUpTrack{conn: up}
+	up.tracks = []*rtpUpTrack{t1, t2}
+
+	removed := up.removeTrack(t1)
+	if !removed {
+		t.Fatalf("expected track to be removed")
+	}
+	if len(up.tracks) != 1 || up.tracks[0] != t2 {
+		t.Fatalf("unexpected tracks after removal: %#v", up.tracks)
+	}
+
+	removed = up.removeTrack(t1)
+	if removed {
+		t.Fatalf("expected removing unknown track to return false")
+	}
+}

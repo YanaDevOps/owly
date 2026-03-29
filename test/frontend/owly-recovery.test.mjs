@@ -678,18 +678,34 @@ function buildMediaStateApi() {
 function buildCameraToggleApi() {
   const calls = {
     displayMessage: [],
+    displayError: [],
     setLocalCameraOff: [],
     refreshLocalCameraUi: [],
-    replaceCameraStream: 0,
+    removeFilter: [],
+    setFilter: [],
+    getUserMedia: [],
+    stopStream: [],
   };
-  const audioTrack = { kind: 'audio', readyState: 'live' };
-  const liveVideoTrack = { kind: 'video', readyState: 'live' };
-  let currentCamera = null;
+  class FilterStub {}
+  const audioTrack = new FakeTrack('audio', 'audio-1');
+  const liveVideoTrack = new FakeTrack('video', 'video-1');
 
   const context = vm.createContext({
     console,
+    navigator: {
+      mediaDevices: {
+        async getUserMedia(constraints) {
+          calls.getUserMedia.push(constraints);
+          return new FakeStream([new FakeTrack('video', 'new-video')]);
+        },
+      },
+    },
+    Filter: FilterStub,
     displayMessage(message) {
       calls.displayMessage.push(message);
+    },
+    displayError(error) {
+      calls.displayError.push(error);
     },
     setLocalCameraOff(value, reflect) {
       calls.setLocalCameraOff.push([value, reflect]);
@@ -705,21 +721,52 @@ function buildCameraToggleApi() {
         )
       );
     },
-    findUpMedia(label) {
-      return label === 'camera' ? currentCamera : null;
+    stopStream(stream) {
+      calls.stopStream.push(stream);
     },
-    async replaceCameraStream() {
-      calls.replaceCameraStream += 1;
+    getSettings() {
+      return {
+        video: '',
+        resolution: null,
+        blackboardMode: false,
+      };
+    },
+    async removeFilter(c, options = {}) {
+      calls.removeFilter.push(options);
+      if (c.userdata.filter instanceof FilterStub) {
+        c.userdata.sourceStream = c.userdata.filter.inputStream;
+        c.stream = c.userdata.filter.inputStream;
+        c.userdata.filter = null;
+      }
+    },
+    async setFilter(c) {
+      calls.setFilter.push(c.localId);
+      const source = c.userdata.sourceStream || c.stream;
+      if (c.userdata.filterDefinition && context.hasVideoTrack(source)) {
+        const output = new FakeStream([
+          ...source.getAudioTracks(),
+          new FakeTrack('video', 'filtered-video'),
+        ]);
+        const filter = new FilterStub();
+        filter.inputStream = source;
+        filter.outputStream = output;
+        c.userdata.filter = filter;
+        c.stream = output;
+        return;
+      }
+      c.stream = source;
     },
   });
 
   const snippet = [
+    extractFunction('buildVideoConstraints'),
     extractFunction('hasActiveAudioTrack'),
+    extractFunction('getCameraSourceStream'),
     extractFunction('stopCameraTrackInSession'),
     extractFunction('startCameraTrackInSession'),
     'this.__exports = {',
-    '  stopCameraTrackInSession,',
-    '  startCameraTrackInSession,',
+      '  stopCameraTrackInSession,',
+      '  startCameraTrackInSession,',
     '};',
   ].join('\n\n');
 
@@ -727,23 +774,25 @@ function buildCameraToggleApi() {
   return {
     ...context.__exports,
     calls,
-    setCurrentCamera(value) {
-      currentCamera = value;
-    },
-    makeCamera({ withVideo }) {
+    makeCamera({ withVideo, withFilter = false }) {
+      const source = new FakeStream(withVideo ? [audioTrack, liveVideoTrack] : [audioTrack]);
+      const stream = withFilter && withVideo ?
+        new FakeStream([audioTrack, new FakeTrack('video', 'filtered-video')]) :
+        source;
+      const userdata = {
+        sourceStream: source,
+        filterDefinition: withFilter ? {} : null,
+      };
+      if (withFilter && withVideo) {
+        const filter = new FilterStub();
+        filter.inputStream = source;
+        filter.outputStream = stream;
+        userdata.filter = filter;
+      }
       return {
         localId: 'camera-1',
-        stream: {
-          getAudioTracks() {
-            return [audioTrack];
-          },
-          getVideoTracks() {
-            return withVideo ? [liveVideoTrack] : [];
-          },
-          getTracks() {
-            return withVideo ? [audioTrack, liveVideoTrack] : [audioTrack];
-          },
-        },
+        stream,
+        userdata,
       };
     },
   };
@@ -894,6 +943,11 @@ class FakeTrack extends FakeEventTarget {
     this.id = id;
     this.readyState = readyState;
   }
+
+  stop() {
+    this.readyState = 'ended';
+    this.emit('ended');
+  }
 }
 
 class FakeStream extends FakeEventTarget {
@@ -904,6 +958,14 @@ class FakeStream extends FakeEventTarget {
 
   getTracks() {
     return [...this.tracks];
+  }
+
+  getAudioTracks() {
+    return this.tracks.filter(track => track.kind === 'audio');
+  }
+
+  getVideoTracks() {
+    return this.tracks.filter(track => track.kind === 'video');
   }
 
   addTrack(track) {
@@ -1100,31 +1162,44 @@ test('gotClose preserves local presentation intent during auto reconnect', () =>
   assert.equal(api.getServerConnection(), connection);
 });
 
-test('stopCameraTrackInSession uses full camera replacement and lands in audio-only mode', async () => {
+test('stopCameraTrackInSession removes only the live video track and keeps camera session alive', async () => {
   const api = buildCameraToggleApi();
   const original = api.makeCamera({ withVideo: true });
 
-  api.setCurrentCamera(api.makeCamera({ withVideo: false }));
   const ok = await api.stopCameraTrackInSession(original);
 
   assert.equal(ok, true);
-  assert.equal(api.calls.replaceCameraStream, 1);
   assert.deepEqual(api.calls.setLocalCameraOff, [[true, true]]);
   assert.deepEqual(api.calls.refreshLocalCameraUi, ['camera-1']);
   assert.deepEqual(api.calls.displayMessage, []);
+  assert.equal(original.userdata.sourceStream.getVideoTracks().length, 0);
+  assert.equal(api.calls.removeFilter.length, 0);
 });
 
-test('startCameraTrackInSession uses full camera replacement and restores video', async () => {
+test('startCameraTrackInSession requests only a new video track and restores camera without replacement', async () => {
   const api = buildCameraToggleApi();
   const original = api.makeCamera({ withVideo: false });
 
-  api.setCurrentCamera(api.makeCamera({ withVideo: true }));
   const ok = await api.startCameraTrackInSession(original);
 
   assert.equal(ok, true);
-  assert.equal(api.calls.replaceCameraStream, 1);
   assert.deepEqual(api.calls.setLocalCameraOff, [[false, true]]);
   assert.deepEqual(api.calls.refreshLocalCameraUi, ['camera-1']);
+  assert.equal(api.calls.getUserMedia.length, 1);
+  assert.equal(api.calls.getUserMedia[0].audio, false);
+  assert.equal(original.userdata.sourceStream.getVideoTracks().length, 1);
+});
+
+test('stopCameraTrackInSession removes active filter before dropping source video', async () => {
+  const api = buildCameraToggleApi();
+  const original = api.makeCamera({ withVideo: true, withFilter: true });
+
+  const ok = await api.stopCameraTrackInSession(original);
+
+  assert.equal(ok, true);
+  assert.equal(api.calls.removeFilter.length, 1);
+  assert.equal(api.calls.removeFilter[0].suppressSync, true);
+  assert.equal(original.userdata.sourceStream.getVideoTracks().length, 0);
 });
 
 test('createReplacementUpStream preserves replace id after local camera teardown', () => {
