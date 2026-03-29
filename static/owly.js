@@ -7804,6 +7804,22 @@ function getMediaTrackSignature(stream) {
         .join('|');
 }
 
+function shouldRecreateDownstreamCameraMedia(
+    c,
+    media,
+    previousHadVideo,
+    nextHasVideo,
+) {
+    return !!(
+        c &&
+        media &&
+        !c.up &&
+        c.label === 'camera' &&
+        !previousHadVideo &&
+        nextHasVideo
+    );
+}
+
 /**
  * setMedia adds a new media element corresponding to stream c.
  *
@@ -7864,6 +7880,24 @@ async function setMedia(c, mirror, video, forceReset) {
 
     let media = /** @type {HTMLVideoElement} */
         (document.getElementById('media-' + c.localId));
+    const previousHadVideo = !!(
+        c.userdata &&
+        c.userdata.boundMediaHadVideo
+    );
+    const nextHasVideo = hasVideoTrack(c.stream);
+    if (shouldRecreateDownstreamCameraMedia(
+        c,
+        media,
+        previousHadVideo,
+        nextHasVideo,
+    )) {
+        const controls = document.getElementById('controls-' + c.localId);
+        if (controls && controls.parentElement)
+            controls.parentElement.removeChild(controls);
+        if (media && media.parentElement)
+            media.parentElement.removeChild(media);
+        media = null;
+    }
     if (!media) {
         if (video) {
             media = video;
@@ -8024,6 +8058,8 @@ async function setMedia(c, mirror, video, forceReset) {
     }
     if (c.userdata)
         c.userdata.boundMediaTrackSignature = nextTrackSignature;
+    if (c.userdata)
+        c.userdata.boundMediaHadVideo = nextHasVideo;
 
     let label = document.getElementById('label-' + c.localId);
     if (!label) {
@@ -8068,14 +8104,10 @@ function showHideMedia(c, elt) {
         debugLog('[showHideMedia] Firefox: Force display for downstream', c.localId);
     }
     if (!display && c.stream) {
-        const tracks = c.stream.getTracks();
-        for (let i = 0; i < tracks.length; i++) {
-            const t = tracks[i];
-            if (t.kind === 'video') {
-                display = true;
-                break;
-            }
-        }
+        if (c.label === 'camera')
+            display = true;
+        else if (hasVideoTrack(c.stream))
+            display = true;
     }
     if (isFF) {
         debugLog('[showHideMedia] Firefox:', c.localId, 'display:', display, 'c.up:', c.up, 'displayAll:', getSettings().displayAll, 'hasStream:', !!c.stream);
@@ -8338,6 +8370,13 @@ function setMediaStatus(c) {
     }
     if (isFF) {
         console.log('[setMediaStatus] Firefox:', c.localId, 'state:', state, 'good:', good, 'srcObject:', !!media.srcObject);
+    }
+    if (!c.up && c.label === 'camera' &&
+        c.stream && !hasVideoTrack(c.stream)) {
+        media.classList.remove('media-failed');
+        if (userId)
+            refreshParticipantPresence(userId);
+        return;
     }
     if (good) {
         media.classList.remove('media-failed');

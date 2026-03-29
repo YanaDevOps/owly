@@ -590,6 +590,91 @@ function buildDownstreamLifecycleApi() {
   };
 }
 
+function buildMediaStateApi() {
+  const calls = {
+    refreshParticipantPresence: [],
+    scheduleConferenceLayout: 0,
+    warnings: [],
+  };
+  const mediaElements = new Map();
+
+  class FakeMediaElement {
+    constructor() {
+      this.classList = makeClassList();
+      this.srcObject = null;
+    }
+
+    play() {
+      return Promise.resolve();
+    }
+  }
+
+  const context = vm.createContext({
+    console,
+    document: {
+      getElementById(id) {
+        return mediaElements.get(id) || null;
+      },
+    },
+    HTMLMediaElement: FakeMediaElement,
+    getSettings() {
+      return { displayAll: false };
+    },
+    isFirefox() {
+      return false;
+    },
+    debugLog() {},
+    scheduleConferenceLayout() {
+      calls.scheduleConferenceLayout += 1;
+    },
+    getStreamConnectionHealth() {
+      return context.__health;
+    },
+    getStreamUserId(c) {
+      return c && c.source ? c.source : null;
+    },
+    refreshParticipantPresence(id) {
+      calls.refreshParticipantPresence.push(id);
+    },
+    shouldSuppressDownstreamFailureWarning() {
+      return true;
+    },
+    displayWarning(message) {
+      calls.warnings.push(message);
+    },
+  });
+
+  const snippet = [
+    extractFunction('hasVideoTrack'),
+    extractFunction('shouldRecreateDownstreamCameraMedia'),
+    extractFunction('showHideMedia'),
+    extractFunction('setMediaStatus'),
+    'this.__exports = {',
+    '  hasVideoTrack,',
+    '  shouldRecreateDownstreamCameraMedia,',
+    '  showHideMedia,',
+    '  setMediaStatus,',
+    '};',
+  ].join('\n\n');
+
+  context.__health = 'healthy';
+  vm.runInContext(snippet, context);
+
+  return {
+    ...context.__exports,
+    calls,
+    createMedia(localId, classes = []) {
+      const media = new FakeMediaElement();
+      classes.forEach(name => media.classList.add(name));
+      mediaElements.set(`media-${localId}`, media);
+      return media;
+    },
+    setHealth(value) {
+      context.__health = value;
+    },
+  };
+}
+
 function buildCameraToggleApi() {
   const calls = {
     displayMessage: [],
@@ -1133,4 +1218,74 @@ test('downstream track lifecycle forces media rebind when tracks change on the s
     'user-2',
     'user-2',
   ]);
+});
+
+test('showHideMedia keeps remote camera peer visible for camera-off placeholder state', () => {
+  const api = buildMediaStateApi();
+  const peer = {
+    classList: makeClassList(['peer-hidden']),
+  };
+  const stream = {
+    getTracks() {
+      return [{ kind: 'audio', readyState: 'live' }];
+    },
+  };
+
+  api.showHideMedia({
+    up: false,
+    label: 'camera',
+    localId: 'down-camera',
+    stream,
+  }, peer);
+
+  assert.equal(peer.classList.contains('peer-hidden'), false);
+  assert.equal(api.calls.scheduleConferenceLayout, 1);
+});
+
+test('setMediaStatus clears failed styling for remote camera without live video', () => {
+  const api = buildMediaStateApi();
+  const media = api.createMedia('down-camera', ['media-failed']);
+  const stream = {
+    getTracks() {
+      return [{ kind: 'audio', readyState: 'live' }];
+    },
+  };
+
+  api.setHealth('poor');
+  api.setMediaStatus({
+    localId: 'down-camera',
+    up: false,
+    label: 'camera',
+    source: 'user-1',
+    stream,
+    pc: { iceConnectionState: 'failed' },
+    userdata: {},
+  });
+
+  assert.equal(media.classList.contains('media-failed'), false);
+  assert.deepEqual(api.calls.refreshParticipantPresence, ['user-1']);
+});
+
+test('downstream camera recreate decision triggers when live video returns', () => {
+  const api = buildMediaStateApi();
+  const media = api.createMedia('down-camera');
+
+  assert.equal(
+    api.shouldRecreateDownstreamCameraMedia(
+      { up: false, label: 'camera' },
+      media,
+      false,
+      true,
+    ),
+    true,
+  );
+  assert.equal(
+    api.shouldRecreateDownstreamCameraMedia(
+      { up: false, label: 'camera' },
+      media,
+      true,
+      true,
+    ),
+    false,
+  );
 });

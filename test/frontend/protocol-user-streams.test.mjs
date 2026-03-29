@@ -53,7 +53,15 @@ function buildRecomputeUserStreams() {
 function createStream(kinds) {
   return {
     getTracks() {
-      return kinds.map((kind) => ({ kind }));
+      return kinds.map((kind) => {
+        if (typeof kind === 'string') {
+          return { kind, readyState: 'live' };
+        }
+        return {
+          readyState: 'live',
+          ...kind,
+        };
+      });
     },
   };
 }
@@ -108,5 +116,32 @@ test('recomputeUserStreams uses upstreams for the local user only', () => {
 
   assert.deepEqual(normalise(sc.users['local-user'].streams), {
     camera: { video: true, audio: true },
+  });
+});
+
+test('recomputeUserStreams ignores ended tracks when building user metadata', () => {
+  const recomputeUserStreams = buildRecomputeUserStreams();
+  const sc = {
+    id: 'local-user',
+    up: {},
+    down: {
+      remoteCamera: {
+        source: 'remote-a',
+        label: 'camera',
+        stream: createStream([
+          { kind: 'video', readyState: 'ended' },
+          { kind: 'audio', readyState: 'live' },
+        ]),
+      },
+    },
+    users: {
+      'remote-a': { streams: {} },
+    },
+  };
+
+  recomputeUserStreams(sc, 'remote-a');
+
+  assert.deepEqual(normalise(sc.users['remote-a'].streams), {
+    camera: { audio: true },
   });
 });

@@ -1726,6 +1726,8 @@ function recomputeUserStreams(sc, id) {
         if (!user.streams[c.label])
             user.streams[c.label] = {};
         c.stream.getTracks().forEach(t => {
+            if (!t || t.readyState === 'ended')
+                return;
             user.streams[c.label][t.kind] = true;
         });
     }
