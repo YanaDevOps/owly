@@ -18,8 +18,17 @@ function extractConst(name) {
 }
 
 function extractFunction(name) {
-  const marker = `function ${name}(`;
-  const start = protocolSource.indexOf(marker);
+  const markers = [
+    `async function ${name}(`,
+    `function ${name}(`,
+  ];
+  let start = -1;
+  for (const marker of markers) {
+    start = protocolSource.indexOf(marker);
+    if (start >= 0) {
+      break;
+    }
+  }
   if (start < 0) {
     throw new Error(`Could not find function ${name}`);
   }
@@ -68,6 +77,44 @@ function createStorage(backing, { throws = false } = {}) {
   };
 }
 
+class FakeBroadcastChannelHub {
+  constructor() {
+    this.channels = new Map();
+  }
+
+  connect(name, instance) {
+    if (!this.channels.has(name)) {
+      this.channels.set(name, new Set());
+    }
+    this.channels.get(name).add(instance);
+  }
+
+  disconnect(name, instance) {
+    if (!this.channels.has(name)) {
+      return;
+    }
+    this.channels.get(name).delete(instance);
+    if (this.channels.get(name).size === 0) {
+      this.channels.delete(name);
+    }
+  }
+
+  post(name, sender, data) {
+    const listeners = this.channels.get(name);
+    if (!listeners) {
+      return;
+    }
+    for (const listener of Array.from(listeners)) {
+      if (listener === sender) {
+        continue;
+      }
+      if (typeof listener.onmessage === 'function') {
+        listener.onmessage({ data });
+      }
+    }
+  }
+}
+
 function buildClientIdApi({
   localStorageBacking = createStorageBacking(),
   sessionStorageBacking = createStorageBacking(),
@@ -75,6 +122,7 @@ function buildClientIdApi({
   localThrows = false,
   sessionThrows = false,
   randomSeedStart = 1,
+  broadcastHub = null,
 } = {}) {
   let randomSeed = randomSeedStart;
   const window = {
@@ -95,7 +143,27 @@ function buildClientIdApi({
       },
     },
     window,
+    setTimeout,
+    clearTimeout,
   });
+
+  if (broadcastHub) {
+    context.BroadcastChannel = class FakeBroadcastChannel {
+      constructor(name) {
+        this.name = name;
+        this.onmessage = null;
+        broadcastHub.connect(name, this);
+      }
+
+      postMessage(data) {
+        broadcastHub.post(this.name, this, data);
+      }
+
+      close() {
+        broadcastHub.disconnect(this.name, this);
+      }
+    };
+  }
 
   const snippet = [
     extractFunction('toHex'),
@@ -104,8 +172,12 @@ function buildClientIdApi({
     extractConst('clientUsernameStorageKey'),
     extractConst('clientResumeTokenStorageKey'),
     extractConst('clientTabKeyWindowPrefix'),
+    extractConst('clientTabProbeChannelName'),
+    extractConst('clientTabProbeTimeoutMs'),
     extractFunction('isPersistentClientId'),
     extractFunction('getPersistentClientTabKey'),
+    extractFunction('getPersistentClientPageId'),
+    extractFunction('rotatePersistentClientTabKey'),
     extractFunction('getPersistentClientScopedStorageKey'),
     extractFunction('getPersistentClientValue'),
     extractFunction('setPersistentClientValue'),
@@ -114,11 +186,17 @@ function buildClientIdApi({
     extractFunction('getPersistentClientResumeToken'),
     extractFunction('rememberPersistentClientUsername'),
     extractFunction('rememberPersistentClientResumeToken'),
+    extractFunction('splitPersistentClientIdentityAcrossTabs'),
     extractFunction('rotatePersistentClientId'),
+    extractFunction('getPersistentClientProbeChannel'),
+    extractFunction('ensurePersistentClientTabOwnership'),
     extractFunction('ensurePersistentClientIdForUsername'),
+    'let persistentClientPageId = null;',
+    'let persistentClientProbeChannel = null;',
     'this.__exports = {',
     '  getPersistentClientId,',
     '  getPersistentClientTabKey,',
+    '  ensurePersistentClientTabOwnership,',
     '  ensurePersistentClientIdForUsername,',
     '  getPersistentClientUsername,',
     '  getPersistentClientResumeToken,',
@@ -210,6 +288,38 @@ test('username change clears stored resume token within the same tab', () => {
   api.ensurePersistentClientIdForUsername('bob');
 
   assert.equal(api.getPersistentClientResumeToken(), null);
+});
+
+test('duplicated tab with inherited window.name rotates client identity when another tab already owns it', async () => {
+  const localStorageBacking = createStorageBacking();
+  const broadcastHub = new FakeBroadcastChannelHub();
+
+  const originalTab = buildClientIdApi({
+    localStorageBacking,
+    broadcastHub,
+  });
+  originalTab.ensurePersistentClientIdForUsername('alice');
+  originalTab.rememberPersistentClientResumeToken('resume-token-1');
+  await originalTab.ensurePersistentClientTabOwnership();
+
+  const inheritedWindowName = originalTab.getWindowName();
+  const duplicateTab = buildClientIdApi({
+    localStorageBacking,
+    broadcastHub,
+    windowName: inheritedWindowName,
+    randomSeedStart: 91,
+  });
+  const inheritedId = duplicateTab.getPersistentClientId();
+  duplicateTab.rememberPersistentClientUsername('alice');
+  duplicateTab.rememberPersistentClientResumeToken('resume-token-1');
+
+  await duplicateTab.ensurePersistentClientTabOwnership();
+  const rotatedId = duplicateTab.ensurePersistentClientIdForUsername('alice');
+
+  assert.notEqual(duplicateTab.getWindowName(), inheritedWindowName);
+  assert.notEqual(rotatedId, inheritedId);
+  assert.equal(duplicateTab.getPersistentClientUsername(), 'alice');
+  assert.equal(duplicateTab.getPersistentClientResumeToken(), null);
 });
 
 test('getPersistentClientId falls back to random when storage is unavailable', () => {

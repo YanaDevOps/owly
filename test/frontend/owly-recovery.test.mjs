@@ -664,6 +664,92 @@ function buildCameraToggleApi() {
   };
 }
 
+function buildSyncContainerApi() {
+  const context = vm.createContext({
+    clearPeerPresentation() {},
+  });
+
+  const snippet = [
+    extractFunction('syncContainerChildren'),
+    'this.__exports = { syncContainerChildren };',
+  ].join('\n\n');
+
+  vm.runInContext(snippet, context);
+  return context.__exports;
+}
+
+class FakeContainerNode {
+  constructor(id) {
+    this.id = id;
+    this.parentElement = null;
+    this.children = [];
+  }
+
+  get firstElementChild() {
+    return this.children[0] || null;
+  }
+
+  appendChild(child) {
+    if (child.parentElement) {
+      child.parentElement.removeChild(child);
+    }
+    this.children.push(child);
+    child.parentElement = this;
+    return child;
+  }
+
+  insertBefore(child, referenceNode) {
+    if (!referenceNode) {
+      return this.appendChild(child);
+    }
+    if (child.parentElement) {
+      child.parentElement.removeChild(child);
+    }
+    const index = this.children.indexOf(referenceNode);
+    if (index < 0) {
+      this.children.push(child);
+    } else {
+      this.children.splice(index, 0, child);
+    }
+    child.parentElement = this;
+    return child;
+  }
+
+  removeChild(child) {
+    const index = this.children.indexOf(child);
+    if (index >= 0) {
+      this.children.splice(index, 1);
+      child.parentElement = null;
+    }
+    return child;
+  }
+}
+
+class FakePeerNode extends FakeContainerNode {
+  constructor(id) {
+    super(id);
+    this.classList = makeClassList();
+    this.style = {
+      removeProperty() {},
+    };
+  }
+
+  get nextElementSibling() {
+    if (!this.parentElement) {
+      return null;
+    }
+    const siblings = this.parentElement.children;
+    const index = siblings.indexOf(this);
+    return index >= 0 ? siblings[index + 1] || null : null;
+  }
+
+  remove() {
+    if (this.parentElement) {
+      this.parentElement.removeChild(this);
+    }
+  }
+}
+
 class FakeEventTarget {
   constructor() {
     this.listeners = new Map();
@@ -932,6 +1018,23 @@ test('startCameraTrackInSession uses full camera replacement and restores video'
   assert.equal(api.calls.replaceCameraStream, 1);
   assert.deepEqual(api.calls.setLocalCameraOff, [[false, true]]);
   assert.deepEqual(api.calls.refreshLocalCameraUi, ['camera-1']);
+});
+
+test('syncContainerChildren removes stale peers that are no longer active', () => {
+  const api = buildSyncContainerApi();
+  const container = new FakeContainerNode('grid');
+  const stale = new FakePeerNode('peer-stale');
+  const activeA = new FakePeerNode('peer-a');
+  const activeB = new FakePeerNode('peer-b');
+
+  container.appendChild(stale);
+  container.appendChild(activeA);
+  container.appendChild(activeB);
+
+  api.syncContainerChildren(container, [activeB, activeA]);
+
+  assert.deepEqual(container.children.map(child => child.id), ['peer-b', 'peer-a']);
+  assert.equal(stale.parentElement, null);
 });
 
 test('downstream replace clears stale media and marks participant reconnecting', () => {

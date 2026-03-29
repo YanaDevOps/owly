@@ -52,6 +52,11 @@ const clientIdStorageKey = 'owly_client_id_v1';
 const clientUsernameStorageKey = 'owly_client_username_v1';
 const clientResumeTokenStorageKey = 'owly_client_resume_token_v1';
 const clientTabKeyWindowPrefix = 'owly-client-tab-v1:';
+const clientTabProbeChannelName = 'owly-client-tab-probe-v1';
+const clientTabProbeTimeoutMs = 150;
+
+let persistentClientPageId = null;
+let persistentClientProbeChannel = null;
 
 function isPersistentClientId(value) {
     return /^[0-9a-f]{32}$/.test(value);
@@ -67,6 +72,24 @@ function getPersistentClientTabKey() {
             if (isPersistentClientId(tabKey))
                 return tabKey;
         }
+        const tabKey = newRandomId();
+        window.name = `${clientTabKeyWindowPrefix}${tabKey}`;
+        return tabKey;
+    } catch (_e) {
+        return null;
+    }
+}
+
+function getPersistentClientPageId() {
+    if (!persistentClientPageId)
+        persistentClientPageId = newRandomId();
+    return persistentClientPageId;
+}
+
+function rotatePersistentClientTabKey() {
+    try {
+        if (typeof window === 'undefined')
+            return null;
         const tabKey = newRandomId();
         window.name = `${clientTabKeyWindowPrefix}${tabKey}`;
         return tabKey;
@@ -176,10 +199,120 @@ function rememberPersistentClientResumeToken(resumeToken) {
     setPersistentClientValue(clientResumeTokenStorageKey, value);
 }
 
+function splitPersistentClientIdentityAcrossTabs() {
+    const username = getPersistentClientUsername();
+    rotatePersistentClientTabKey();
+    const id = rotatePersistentClientId();
+    if (username)
+        rememberPersistentClientUsername(username);
+    rememberPersistentClientResumeToken(null);
+    return id;
+}
+
 function rotatePersistentClientId() {
     const id = newRandomId();
     setPersistentClientValue(clientIdStorageKey, id);
     return id;
+}
+
+function getPersistentClientProbeChannel() {
+    if (persistentClientProbeChannel || typeof BroadcastChannel === 'undefined')
+        return persistentClientProbeChannel;
+
+    const channel = new BroadcastChannel(clientTabProbeChannelName);
+    channel.onmessage = function(event) {
+        const message = event && event.data ? event.data : null;
+        if (!message || message.type !== 'probe')
+            return;
+        if (!message.tabKey || !message.responseChannel || !message.pageId)
+            return;
+
+        const ownTabKey = getPersistentClientTabKey();
+        if (!ownTabKey || ownTabKey !== message.tabKey)
+            return;
+        if (message.pageId === getPersistentClientPageId())
+            return;
+
+        try {
+            const responseChannel = new BroadcastChannel(message.responseChannel);
+            responseChannel.postMessage({
+                type: 'ack',
+                tabKey: ownTabKey,
+                pageId: message.pageId,
+                ownerPageId: getPersistentClientPageId(),
+            });
+            responseChannel.close();
+        } catch (_e) {
+            // Ignore response failures.
+        }
+    };
+
+    persistentClientProbeChannel = channel;
+    return persistentClientProbeChannel;
+}
+
+async function ensurePersistentClientTabOwnership() {
+    const tabKey = getPersistentClientTabKey();
+    if (!tabKey)
+        return tabKey;
+
+    const probeChannel = getPersistentClientProbeChannel();
+    if (!probeChannel)
+        return tabKey;
+
+    const pageId = getPersistentClientPageId();
+    const responseChannelName =
+        `${clientTabProbeChannelName}:${pageId}:${newRandomId()}`;
+
+    return await new Promise(resolve => {
+        let settled = false;
+        let timeoutId = null;
+        let responseChannel = null;
+
+        const settle = value => {
+            if (settled)
+                return;
+            settled = true;
+            if (timeoutId !== null)
+                clearTimeout(timeoutId);
+            if (responseChannel)
+                responseChannel.close();
+            resolve(value);
+        };
+
+        try {
+            responseChannel = new BroadcastChannel(responseChannelName);
+        } catch (_e) {
+            settle(tabKey);
+            return;
+        }
+
+        responseChannel.onmessage = function(event) {
+            const message = event && event.data ? event.data : null;
+            if (!message || message.type !== 'ack')
+                return;
+            if (message.tabKey !== tabKey || message.pageId !== pageId)
+                return;
+            if (message.ownerPageId === pageId)
+                return;
+            splitPersistentClientIdentityAcrossTabs();
+            settle(getPersistentClientTabKey());
+        };
+
+        try {
+            probeChannel.postMessage({
+                type: 'probe',
+                tabKey: tabKey,
+                pageId: pageId,
+                responseChannel: responseChannelName,
+            });
+        } catch (_e) {
+            settle(tabKey);
+            return;
+        }
+
+        timeoutId = setTimeout(() => settle(tabKey), clientTabProbeTimeoutMs);
+    });
 }
 
 function ensurePersistentClientIdForUsername(username) {

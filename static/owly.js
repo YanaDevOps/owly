@@ -18,7 +18,7 @@
 // THE SOFTWARE.
 
 'use strict';
-/* global rememberPersistentClientUsername, ensurePersistentClientIdForUsername, getPersistentClientTabKey */
+/* global rememberPersistentClientUsername, ensurePersistentClientIdForUsername, ensurePersistentClientTabOwnership, getPersistentClientTabKey */
 
 /* global ServerConnection */
 
@@ -493,6 +493,24 @@ function clearReconnectAuthState() {
     reconnectRestoreLocalMedia = false;
     persistRefreshRejoinState(null);
     setVisibility('sharelink-section', false);
+}
+
+async function preparePersistentClientIdentityForConnection() {
+    let username = '';
+    if (reconnectState && typeof reconnectState.username === 'string') {
+        username = reconnectState.username;
+    } else {
+        try {
+            username = getInputElement('username').value.trim();
+        } catch (_e) {
+            username = '';
+        }
+    }
+
+    if (typeof ensurePersistentClientTabOwnership === 'function')
+        await ensurePersistentClientTabOwnership();
+    if (typeof ensurePersistentClientIdForUsername === 'function')
+        ensurePersistentClientIdForUsername(username);
 }
 
 /**
@@ -2387,6 +2405,7 @@ function clearPeerPresentation(peer) {
 function syncContainerChildren(container, children) {
     if (!container)
         return;
+    const activeChildren = new Set(children);
     let referenceNode = container.firstElementChild;
     for (const child of children) {
         if (child.parentElement !== container) {
@@ -2395,6 +2414,12 @@ function syncContainerChildren(container, children) {
             container.insertBefore(child, referenceNode);
         }
         referenceNode = child.nextElementSibling;
+    }
+    for (const child of Array.from(container.children)) {
+        if (activeChildren.has(child))
+            continue;
+        clearPeerPresentation(child);
+        child.remove();
     }
 }
 
@@ -11092,6 +11117,8 @@ async function serverConnect(trigger = 'manual') {
         return serverConnectPromise;
 
     const promise = (async () => {
+        await preparePersistentClientIdentityForConnection();
+
         if (serverConnection && serverConnection.socket)
             serverConnection.close();
 
