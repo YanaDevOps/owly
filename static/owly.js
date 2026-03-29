@@ -5017,22 +5017,38 @@ function refreshLocalCameraUi(c) {
         return;
     c.setStream(c.stream);
     const peer = getPeer(c.localId);
-    const media = document.getElementById('media-' + c.localId);
-    if (media instanceof HTMLVideoElement) {
-        media.srcObject = null;
-        if (c.stream)
-            media.srcObject = c.stream;
-        if (peer)
-            updatePeerAspectFromMedia(peer, media, c);
-    }
+    const previousTrackSignature =
+        c.userdata && typeof c.userdata.boundMediaTrackSignature === 'string' ?
+            c.userdata.boundMediaTrackSignature :
+            '';
+    const nextTrackSignature = getMediaTrackSignature(c.stream);
+    const previousHadVideo = !!(
+        c.userdata &&
+        c.userdata.boundMediaHadVideo
+    );
+    const nextHadVideo = hasVideoTrack(c.stream);
+    const forceReset = previousTrackSignature !== nextTrackSignature ||
+        previousHadVideo !== nextHadVideo;
     if (peer)
         updatePeerVideoState(c, peer);
     setLabel(c);
-    if (media instanceof HTMLVideoElement && hasVideoTrack(c.stream)) {
-        media.play().catch(_e => {
-            // Autoplay may still be blocked on some browsers; ignore.
+    const mirrorView = !!(typeof getSettings === 'function' && getSettings().mirrorView);
+    void setMedia(c, mirrorView, undefined, forceReset)
+        .then(() => {
+            const selfPreviewSlot = getSelfPreviewSlot();
+            if (
+                c.up &&
+                c.label === 'camera' &&
+                selfPreviewSlot &&
+                !selfPreviewSlot.classList.contains('invisible')
+            ) {
+                restoreLiveSelfPreviewPeer(selfPreviewSlot);
+            }
+            scheduleConferenceLayout();
+        })
+        .catch(e => {
+            console.error('[refreshLocalCameraUi] Failed to refresh local media:', c.localId, e);
         });
-    }
     scheduleConferenceLayout();
     setButtonsVisibility();
 }

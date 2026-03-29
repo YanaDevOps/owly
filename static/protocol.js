@@ -362,6 +362,42 @@ function newLocalId() {
 }
 
 /**
+ * applyJoinedMessage updates connection state for a joined message and
+ * forwards it to the client callback. Terminal states are intentionally
+ * left to the UI layer to finalise so transient reconnect/close flows
+ * don't wipe the room roster before the app can classify them.
+ *
+ * @param {ServerConnection} sc
+ * @param {Object<string, any>} m
+ */
+function applyJoinedMessage(sc, m) {
+    if (!sc || !m)
+        return;
+
+    if (m.kind === 'join' || m.kind === 'change') {
+        if (m.kind === 'join' && sc.group) {
+            throw new Error('Joined multiple groups');
+        } else if (m.kind === 'change' && m.group !== sc.group) {
+            console.warn('join(change) for inconsistent group');
+            return;
+        }
+        sc.group = m.group;
+        sc.username = m.username;
+        if (typeof m.resumeToken === 'string' && m.resumeToken)
+            rememberPersistentClientResumeToken(m.resumeToken);
+        sc.permissions = m.permissions || [];
+        sc.rtcConfiguration = m.rtcConfiguration || null;
+    }
+
+    if (sc.onjoined) {
+        sc.onjoined.call(sc, m.kind, m.group,
+                         m.permissions || [],
+                         m.status, m.data,
+                         m.error || null, m.value || null);
+    }
+}
+
+/**
  * @typedef {Object} user
  * @property {string} username
  * @property {Array<string>} permissions
@@ -796,34 +832,7 @@ ServerConnection.prototype.connect = function(url) {
             sc.gotRemoteIce(m.id, m.candidate);
             break;
         case 'joined':
-            if (m.kind === 'leave' || m.kind === 'fail') {
-                for (const id in sc.users) {
-                    delete(sc.users[id]);
-                    if (sc.onuser)
-                        sc.onuser.call(sc, id, 'delete');
-                }
-                sc.username = null;
-                sc.permissions = [];
-                sc.rtcConfiguration = null;
-            } else if (m.kind === 'join' || m.kind === 'change') {
-                if (m.kind === 'join' && sc.group) {
-                    throw new Error('Joined multiple groups');
-                } else if (m.kind === 'change' && m.group !== sc.group) {
-                    console.warn('join(change) for inconsistent group');
-                    break;
-                }
-                sc.group = m.group;
-                sc.username = m.username;
-                if (typeof m.resumeToken === 'string' && m.resumeToken)
-                    rememberPersistentClientResumeToken(m.resumeToken);
-                sc.permissions = m.permissions || [];
-                sc.rtcConfiguration = m.rtcConfiguration || null;
-            }
-            if (sc.onjoined)
-                sc.onjoined.call(sc, m.kind, m.group,
-                                 m.permissions || [],
-                                 m.status, m.data,
-                                 m.error || null, m.value || null);
+            applyJoinedMessage(sc, m);
             break;
         case 'user':
             switch (m.kind) {

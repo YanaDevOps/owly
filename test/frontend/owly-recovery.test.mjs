@@ -675,6 +675,87 @@ function buildMediaStateApi() {
   };
 }
 
+function buildRefreshLocalCameraUiApi() {
+  const calls = {
+    updatePeerVideoState: [],
+    setLabel: 0,
+    setMedia: [],
+    restoreLiveSelfPreviewPeer: 0,
+    scheduleConferenceLayout: 0,
+    setButtonsVisibility: 0,
+  };
+
+  const peer = { id: 'peer-camera-1' };
+  const selfPreviewSlot = {
+    classList: {
+      contains() {
+        return false;
+      },
+    },
+  };
+
+  const context = vm.createContext({
+    console,
+    getPeer(localId) {
+      return localId === 'camera-1' ? peer : null;
+    },
+    getMediaTrackSignature(stream) {
+      return stream ? stream.signature || '' : '';
+    },
+    hasVideoTrack(stream) {
+      return !!(
+        stream &&
+        stream.getTracks().some(
+          track => track.kind === 'video' && track.readyState !== 'ended',
+        )
+      );
+    },
+    updatePeerVideoState(c, nextPeer) {
+      calls.updatePeerVideoState.push([c.localId, nextPeer && nextPeer.id]);
+    },
+    setLabel() {
+      calls.setLabel += 1;
+    },
+    getSettings() {
+      return { mirrorView: true };
+    },
+    setMedia(c, mirror, _video, forceReset) {
+      calls.setMedia.push({
+        localId: c.localId,
+        mirror,
+        forceReset,
+      });
+      return Promise.resolve();
+    },
+    getSelfPreviewSlot() {
+      return selfPreviewSlot;
+    },
+    restoreLiveSelfPreviewPeer(slot) {
+      if (slot === selfPreviewSlot)
+        calls.restoreLiveSelfPreviewPeer += 1;
+      return true;
+    },
+    scheduleConferenceLayout() {
+      calls.scheduleConferenceLayout += 1;
+    },
+    setButtonsVisibility() {
+      calls.setButtonsVisibility += 1;
+    },
+  });
+
+  const snippet = [
+    extractFunction('refreshLocalCameraUi'),
+    'this.__exports = { refreshLocalCameraUi };',
+  ].join('\n\n');
+
+  vm.runInContext(snippet, context);
+
+  return {
+    refreshLocalCameraUi: context.__exports.refreshLocalCameraUi,
+    calls,
+  };
+}
+
 function buildCameraToggleApi() {
   const calls = {
     displayMessage: [],
@@ -1160,6 +1241,44 @@ test('gotClose preserves local presentation intent during auto reconnect', () =>
   assert.equal(api.calls.closeSafariStream, 1);
   assert.equal(api.calls.updateReconnectCooldownUi, 1);
   assert.equal(api.getServerConnection(), connection);
+});
+
+test('refreshLocalCameraUi forces a local media refresh and repairs self preview after camera restart', async () => {
+  const api = buildRefreshLocalCameraUiApi();
+  const stream = {
+    signature: 'camera-track-v2',
+    getTracks() {
+      return [{ kind: 'video', readyState: 'live' }];
+    },
+  };
+  const camera = {
+    localId: 'camera-1',
+    label: 'camera',
+    up: true,
+    stream,
+    userdata: {
+      boundMediaTrackSignature: 'camera-track-v1',
+      boundMediaHadVideo: false,
+    },
+    setStream(next) {
+      this.lastSetStream = next;
+    },
+  };
+
+  api.refreshLocalCameraUi(camera);
+  await Promise.resolve();
+
+  assert.equal(camera.lastSetStream, stream);
+  assert.deepEqual(api.calls.updatePeerVideoState, [['camera-1', 'peer-camera-1']]);
+  assert.equal(api.calls.setLabel, 1);
+  assert.deepEqual(api.calls.setMedia, [{
+    localId: 'camera-1',
+    mirror: true,
+    forceReset: true,
+  }]);
+  assert.equal(api.calls.restoreLiveSelfPreviewPeer, 1);
+  assert.equal(api.calls.scheduleConferenceLayout, 2);
+  assert.equal(api.calls.setButtonsVisibility, 1);
 });
 
 test('stopCameraTrackInSession removes only the live video track and keeps camera session alive', async () => {
