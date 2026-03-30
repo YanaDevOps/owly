@@ -860,13 +860,9 @@ function buildCameraToggleApi() {
     extractFunction('getCameraSourceStream'),
     extractFunction('stopCameraTrackInSession'),
     extractFunction('startCameraTrackInSession'),
-    extractFunction('stopLocalPresentationInSession'),
-    extractFunction('startLocalPresentationInSession'),
     'this.__exports = {',
       '  stopCameraTrackInSession,',
       '  startCameraTrackInSession,',
-      '  stopLocalPresentationInSession,',
-      '  startLocalPresentationInSession,',
     '};',
   ].join('\n\n');
 
@@ -1477,34 +1473,6 @@ test('startCameraTrackInSession requests only a new video track and restores cam
   assert.equal(original.userdata.sourceStream.getVideoTracks().length, 1);
 });
 
-test('stopLocalPresentationInSession removes audio and video without closing the camera session', async () => {
-  const api = buildCameraToggleApi();
-  const original = api.makeCamera({ withVideo: true, withAudio: true });
-
-  const ok = await api.stopLocalPresentationInSession(original);
-
-  assert.equal(ok, true);
-  assert.deepEqual(api.calls.refreshLocalCameraUi, ['camera-1']);
-  assert.deepEqual(api.calls.setLocalCameraOff, []);
-  assert.equal(original.userdata.sourceStream.getTracks().length, 0);
-});
-
-test('startLocalPresentationInSession restores a disabled camera session in place', async () => {
-  const api = buildCameraToggleApi();
-  const original = api.makeCamera({ withVideo: false, withAudio: false });
-
-  const ok = await api.startLocalPresentationInSession(original);
-
-  assert.equal(ok, true);
-  assert.equal(api.calls.getUserMedia.length, 1);
-  assert.notEqual(api.calls.getUserMedia[0].audio, false);
-  assert.notEqual(api.calls.getUserMedia[0].video, false);
-  assert.deepEqual(api.calls.setMediaChoices, [true]);
-  assert.deepEqual(api.calls.refreshLocalCameraUi, ['camera-1']);
-  assert.equal(original.userdata.sourceStream.getAudioTracks().length, 1);
-  assert.equal(original.userdata.sourceStream.getVideoTracks().length, 1);
-});
-
 test('stopCameraTrackInSession removes active filter before dropping source video', async () => {
   const api = buildCameraToggleApi();
   const original = api.makeCamera({ withVideo: true, withFilter: true });
@@ -1544,7 +1512,7 @@ test('syncContainerChildren removes stale peers that are no longer active', () =
   assert.equal(stale.parentElement, null);
 });
 
-test('setButtonsVisibility treats an empty local camera session as disabled presentation', () => {
+test('setButtonsVisibility hides camera controls when there is no active local camera stream', () => {
   const api = buildButtonsVisibilityApi();
   api.setCameraStream({
     label: 'camera',
@@ -1554,8 +1522,6 @@ test('setButtonsVisibility treats an empty local camera session as disabled pres
   api.setButtonsVisibility();
 
   assert.deepEqual(api.calls.setVisibility, [
-    ['presentbutton', true],
-    ['unpresentbutton', false],
     ['mutebutton', true],
     ['camerabutton', false],
     ['sharebutton', true],
@@ -1585,7 +1551,7 @@ test('getConferencePlaceholderStatus reports media off for an intentionally disa
   }), 'Media off');
 });
 
-test('replaceCameraStream is a no-op when the local camera session exists but is disabled', async () => {
+test('replaceCameraStream refreshes the local camera stream whenever it exists', async () => {
   const api = buildReplaceCameraStreamApi();
   api.setCameraStream({
     label: 'camera',
@@ -1595,7 +1561,7 @@ test('replaceCameraStream is a no-op when the local camera session exists but is
 
   await api.replaceCameraStream();
 
-  assert.deepEqual(api.calls.addLocalMedia, []);
+  assert.deepEqual(api.calls.addLocalMedia, ['camera-1']);
 });
 
 test('downstream replace clears stale media and marks participant reconnecting', () => {

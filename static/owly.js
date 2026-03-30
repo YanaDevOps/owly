@@ -4800,41 +4800,6 @@ function beginPageTransitionDisconnect(event) {
 addEventListener('pagehide', beginPageTransitionDisconnect);
 addEventListener('beforeunload', beginPageTransitionDisconnect);
 
-getButtonElement('presentbutton').onclick = async function(e) {
-    e.preventDefault();
-    const button = this;
-    if (!(button instanceof HTMLButtonElement))
-        throw new Error('Unexpected type for this.');
-    // there's a potential race condition here: the user might click the
-    // button a second time before the stream is set up and the button hidden.
-    button.disabled = true;
-    try {
-        const local = findUpMedia('camera');
-        if (!local) {
-            await addLocalMedia();
-        } else if (!isActiveLocalPresentationStream(local)) {
-            await runLocalCameraOperation(
-                token => startLocalPresentationInSession(local, token),
-            );
-        }
-    } finally {
-        button.disabled = false;
-    }
-};
-
-getButtonElement('unpresentbutton').onclick = function(e) {
-    e.preventDefault();
-    const button = this;
-    if (!(button instanceof HTMLButtonElement))
-        throw new Error('Unexpected type for this.');
-    if (button.disabled)
-        return;
-    button.disabled = true;
-    closeLocalPresentation('camera').finally(() => {
-        button.disabled = false;
-    });
-};
-
 /**
  * @param {string} id
  * @param {boolean} visible
@@ -4875,10 +4840,6 @@ function setButtonsVisibility() {
     const localVideoEnabled = !!(localStream && hasVideoTrack(localStream.stream));
     const mediacount = getPeerCount();
     const sharing = !!findUpMedia('screenshare');
-
-    // don't allow multiple presentations
-    setVisibility('presentbutton', canPresent && !local);
-    setVisibility('unpresentbutton', local);
 
     // Show mute button when connected
     setVisibility('mutebutton', connected);
@@ -5144,95 +5105,6 @@ async function startCameraTrackInSession(c, token) {
     return hasVideoTrack(c.stream);
 }
 
-async function stopLocalPresentationInSession(c, token) {
-    if (!c || !c.stream)
-        return false;
-
-    let sourceStream = getCameraSourceStream(c);
-    const liveTracks = sourceStream.getTracks().filter(
-        t => t.readyState !== 'ended' &&
-            (t.kind === 'audio' || t.kind === 'video'),
-    );
-    if (!liveTracks.length) {
-        await setFilter(c);
-        refreshLocalCameraUi(c);
-        return true;
-    }
-
-    if (c.userdata.filter)
-        await removeFilter(c, {suppressSync: true});
-    if (token !== undefined && !isCurrentLocalCameraOperation(token))
-        return false;
-
-    sourceStream = getCameraSourceStream(c);
-    Array.from(sourceStream.getTracks()).forEach(t => {
-        t.onended = null;
-        sourceStream.removeTrack(t);
-        t.stop();
-    });
-
-    if (token !== undefined && !isCurrentLocalCameraOperation(token))
-        return false;
-
-    await setFilter(c);
-    refreshLocalCameraUi(c);
-    return !hasActivePresentationTracks(c.stream);
-}
-
-async function startLocalPresentationInSession(c, token) {
-    if (!c || !c.stream)
-        return false;
-
-    let sourceStream = getCameraSourceStream(c);
-    if (hasActivePresentationTracks(sourceStream)) {
-        await setFilter(c);
-        refreshLocalCameraUi(c);
-        return true;
-    }
-
-    const settings = getSettings();
-    const audio = buildAudioConstraints(settings);
-    const video = settings.cameraOff ? false : buildVideoConstraints(settings);
-    if (!audio && !video) {
-        displayMessage('Please enable a camera or microphone first.');
-        return false;
-    }
-
-    let mediaStream = null;
-    try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({
-            audio: audio,
-            video: video,
-        });
-    } catch (e) {
-        displayError(e);
-        return false;
-    }
-
-    if (token !== undefined && !isCurrentLocalCameraOperation(token)) {
-        stopStream(mediaStream);
-        return false;
-    }
-
-    const liveTracks = mediaStream.getTracks().filter(
-        t => t.readyState !== 'ended' &&
-            (t.kind === 'audio' || t.kind === 'video'),
-    );
-    if (!liveTracks.length) {
-        stopStream(mediaStream);
-        return false;
-    }
-
-    setMediaChoices(true);
-    sourceStream = getCameraSourceStream(c);
-    liveTracks.forEach(track => {
-        sourceStream.addTrack(track);
-    });
-    await setFilter(c);
-    refreshLocalCameraUi(c);
-    return hasActivePresentationTracks(c.stream);
-}
-
 getSelectElement('videoselect').onchange = function(e) {
     e.preventDefault();
     if (!(this instanceof HTMLSelectElement))
@@ -5294,7 +5166,7 @@ document.getElementById('mutebutton').onclick = function(e) {
     e.preventDefault();
     let localMute = getSettings().localMute;
     if (localMute && !isActiveLocalPresentationStream(findUpMedia('camera'))) {
-        displayMessage('Please use Enable to enable your camera or microphone.');
+        displayMessage('Your camera or microphone is not active.');
     } else {
         localMute = !localMute;
         setLocalMute(localMute, true);
@@ -5305,7 +5177,7 @@ document.getElementById('camerabutton').onclick = async function(e) {
     e.preventDefault();
     const local = findUpMedia('camera');
     if (!isActiveLocalPresentationStream(local)) {
-        displayMessage('Please use Enable to enable your camera or microphone.');
+        displayMessage('Your camera or microphone is not active.');
         return;
     }
     if (this.dataset.busy === '1')
@@ -7617,7 +7489,7 @@ async function replaceUpStreams(label) {
  */
 function replaceCameraStream() {
     const c = findUpMedia('camera');
-    if (c && isActiveLocalPresentationStream(c))
+    if (c)
         return addLocalMedia(c.localId);
     return Promise.resolve();
 }
@@ -7887,23 +7759,6 @@ function findUpMedia(label) {
             return c;
     }
     return null;
-}
-
-function closeLocalPresentation(label = 'camera') {
-    if (label === 'camera')
-        localPresentationDesired = false;
-    return runLocalCameraOperation(async token => {
-        if (!isCurrentLocalCameraOperation(token) || !serverConnection)
-            return;
-        if (label === 'camera') {
-            const c = findUpMedia('camera');
-            if (c)
-                await stopLocalPresentationInSession(c, token);
-        } else {
-            closeUpMedia(label);
-        }
-        setButtonsVisibility();
-    });
 }
 
 /**
@@ -9331,8 +9186,6 @@ input.placeholder = '';
             if (present)
                 reflectSettings();
 
-            const button = getButtonElement('presentbutton');
-            button.disabled = true;
             try {
                 await addLocalMedia();
                 // Ensure microphone is not muted by default on the explicit
@@ -9340,13 +9193,9 @@ input.placeholder = '';
                 if (present)
                     setLocalMute(false, true);
             } finally {
-                button.disabled = false;
                 reconnectRestoreLocalMedia = false;
             }
         } else {
-            displayMessage(
-                "Press Enable to enable your camera or microphone",
-            );
             reconnectRestoreLocalMedia = false;
         }
     } else {

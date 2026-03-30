@@ -278,10 +278,6 @@ html.dark-theme .header-kicker {
     min-width: 0;
 }
 
-.header-present-group {
-    justify-content: center;
-}
-
 .header-profile-group .profile {
     min-width: 0;
 }
@@ -2780,7 +2776,6 @@ html.dark-theme .profile-logo {
 
     .header-group,
     .header-chat-group,
-    .header-present-group,
     .header-profile-group,
     .header-workspace-group {
         align-items: center;
@@ -3358,16 +3353,12 @@ html.dark-theme .no-media-list li {
         order: 10;
     }
 
-    .header-present-group {
+    .header-profile-group {
         order: 20;
     }
 
-    .header-profile-group {
-        order: 30;
-    }
-
     .header-workspace-group {
-        order: 40;
+        order: 30;
         margin-left: 6px;
     }
 
@@ -3410,14 +3401,12 @@ html.dark-theme .no-media-list li {
 
     .workspace-toggle-mobile span,
     .header-chat-toggle span,
-    .header-present .nav-text,
     .logout-text {
         display: none;
     }
 
     .header-action,
     .header-chat-toggle,
-    .header-present,
     .user-logout {
         display: inline-flex;
         align-items: center;
@@ -3436,7 +3425,6 @@ html.dark-theme .no-media-list li {
 
     .header-action i,
     .header-chat-toggle i,
-    .header-present i,
     .user-logout i,
     .workspace-toggle-mobile i {
         line-height: 1;
@@ -4002,7 +3990,6 @@ html.dark-theme .no-media-list li {
 
     .workspace-toggle-mobile span,
     .header-chat-toggle span,
-    .header-present .nav-text,
     .logout-text {
         display: none;
     }
