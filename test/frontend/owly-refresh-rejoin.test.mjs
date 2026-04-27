@@ -277,7 +277,6 @@ function buildDeletePresenceApi({ userStreams = [] } = {}) {
     extractFunction('clearParticipantRemovalTimer'),
     extractFunction('removeUserRow'),
     extractFunction('removeParticipantImmediately'),
-    extractFunction('markParticipantOffline'),
     extractFunction('delUser'),
     'this.__exports = {',
     '  delUser,',
@@ -552,7 +551,7 @@ test('hard leave removes the participant immediately without waiting for a recon
   assert.equal(api.getTimers().length, 0);
 });
 
-test('transient delete shows reconnect state before removing the participant later', () => {
+test('server delete removes media artifacts immediately even when stale streams remain', () => {
   const api = buildDeletePresenceApi({
     userStreams: [{ localId: 'stream-1' }],
   });
@@ -564,24 +563,9 @@ test('transient delete shows reconnect state before removing the participant lat
 
   const state = api.getState('remote-5');
   assert.deepEqual([...api.getArtifactRemovals()], ['remote-5']);
-  assert.deepEqual([...api.getDeletedMarks()], []);
-  assert.equal(state.id, 'remote-5');
-  assert.equal(state.username, 'Bob');
-  assert.equal(state.offline, true);
-  assert.equal(state.transientDisconnect, true);
-  assert.equal(typeof state.offlineSince, 'number');
-  assert.equal(state.placeholderConnectingSince, 0);
-  assert.equal(state.connectionStatus, 'offline');
-  assert.equal(state.speaking, false);
-  assert.equal(state.hasAudio, false);
-  assert.equal(api.getTimers().length, 1);
-  assert.equal(api.getTimers()[0].delay, 15000);
-
-  api.getTimers()[0].fn();
-
-  assert.equal(api.getState('remote-5'), null);
+  assert.equal(state, null);
   assert.deepEqual([...api.getDeletedMarks()], ['remote-5']);
-  assert.deepEqual([...api.getArtifactRemovals()], ['remote-5', 'remote-5']);
+  assert.equal(api.getTimers().length, 0);
 });
 
 test('conference participants do not duplicate transient reconnect users when a fallback stream exists', () => {

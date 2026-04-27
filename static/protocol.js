@@ -702,6 +702,25 @@ ServerConnection.prototype.send = function(m) {
     return this.socket.send(JSON.stringify(m));
 };
 
+function handleSocketClose(sc, e) {
+    for (const id in sc.up) {
+        const c = sc.up[id];
+        c.close();
+    }
+    for (const id in sc.down) {
+        const c = sc.down[id];
+        c.close();
+    }
+    if (sc.pingHandler) {
+        clearInterval(sc.pingHandler);
+        sc.pingHandler = null;
+    }
+    sc.livenessTimeoutStreak = 0;
+    if (sc.onclose)
+        sc.onclose.call(sc, e.code, e.reason);
+    sc.socket = null;
+}
+
 /**
  * connect connects to the server.
  *
@@ -759,32 +778,7 @@ ServerConnection.prototype.connect = function(url) {
         }
     };
     this.socket.onclose = function(e) {
-        sc.permissions = [];
-        for (const id in sc.up) {
-            const c = sc.up[id];
-            c.close();
-        }
-        for (const id in sc.down) {
-            const c = sc.down[id];
-            c.close();
-        }
-        for (const id in sc.users) {
-            delete(sc.users[id]);
-            if (sc.onuser)
-                sc.onuser.call(sc, id, 'delete');
-        }
-        if (sc.group && sc.onjoined)
-            sc.onjoined.call(sc, 'leave', sc.group, [], {}, {}, '', '');
-        sc.group = null;
-        sc.username = null;
-        if (sc.pingHandler) {
-            clearInterval(sc.pingHandler);
-            sc.pingHandler = null;
-        }
-        sc.livenessTimeoutStreak = 0;
-        if (sc.onclose)
-            sc.onclose.call(sc, e.code, e.reason);
-        sc.socket = null;
+        handleSocketClose(sc, e);
     };
     this.socket.onmessage = function(e) {
         let m;

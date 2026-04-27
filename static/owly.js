@@ -113,7 +113,6 @@ let sharedScreenTouchState = null;
 let sharedScreenZoomMediaLocalId = null;
 const participantPresence = new Map();
 const recentlyDeletedConferenceUsers = new Map();
-const participantOfflineGracePeriod = 2000;
 const participantReconnectPlaceholderGracePeriod = 15000;
 const participantConnectionPoorGracePeriod = 5000;
 const conferenceConnectingPlaceholderGracePeriod = 2000;
@@ -1523,36 +1522,6 @@ function refreshParticipantPresence(id, userinfo) {
     state.hasAudio = participantHasAudio(id, state);
     state.speaking = isParticipantSpeaking(id, state);
     renderParticipantRow(id);
-}
-
-function markParticipantOffline(
-    id,
-    removeDelayMs = participantOfflineGracePeriod,
-    transientDisconnect = false,
-) {
-    const state = participantPresence.get(id);
-    if (!state || !state.userinfo) {
-        removeUserRow(id, true);
-        return;
-    }
-
-    clearParticipantRemovalTimer(state);
-    state.offline = true;
-    state.transientDisconnect = transientDisconnect;
-    state.offlineSince = Date.now();
-    state.connectionStatus = 'offline';
-    state.speaking = false;
-    state.placeholderConnectingSince = 0;
-    renderParticipantRow(id);
-
-    state.removeTimer = setTimeout(() => {
-        removeParticipantImmediately(id, {
-            markDeleted: transientDisconnect,
-            removeConferenceArtifacts: transientDisconnect,
-        });
-        scheduleConferenceLayout();
-        updateStageBadge();
-    }, removeDelayMs);
 }
 
 function getPeerElements() {
@@ -8858,20 +8827,11 @@ function setUserStatus(id, elt, userinfo) {
  * @param {string} id
  */
 function delUser(id) {
-    const hasStreams = getUserStreams(id).length > 0;
     removeConferenceArtifactsForUser(id);
-    if (!hasStreams) {
-        removeParticipantImmediately(id, {
-            markDeleted: true,
-            removeConferenceArtifacts: false,
-        });
-        return;
-    }
-    markParticipantOffline(
-        id,
-        participantReconnectPlaceholderGracePeriod,
-        true,
-    );
+    removeParticipantImmediately(id, {
+        markDeleted: true,
+        removeConferenceArtifacts: false,
+    });
 }
 
 /**

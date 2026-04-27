@@ -68,6 +68,41 @@ function buildJoinedMessageApi() {
   };
 }
 
+function buildSocketCloseApi() {
+  const calls = {
+    closedStreams: [],
+    clearedIntervals: [],
+    onclose: [],
+    onjoined: [],
+    onuser: [],
+  };
+
+  const context = vm.createContext({
+    console,
+    clearInterval(handler) {
+      calls.clearedIntervals.push(handler);
+    },
+  });
+
+  const snippet = [
+    extractFunction('handleSocketClose'),
+    'this.__exports = { handleSocketClose };',
+  ].join('\n\n');
+
+  vm.runInContext(snippet, context);
+  return {
+    handleSocketClose: context.__exports.handleSocketClose,
+    calls,
+    makeStream(id) {
+      return {
+        close() {
+          calls.closedStreams.push(id);
+        },
+      };
+    },
+  };
+}
+
 function normalise(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -173,4 +208,51 @@ test('applyJoinedMessage updates connection state for join before notifying the 
       iceServers: [{ urls: 'turn:turn.example' }],
     },
   }]);
+});
+
+test('handleSocketClose does not clear the roster before the app classifies the close', () => {
+  const api = buildSocketCloseApi();
+  const pingHandler = { id: 'ping' };
+  const sc = {
+    group: 'room',
+    username: 'alice',
+    users: {
+      alice: { username: 'alice', streams: {} },
+      bob: { username: 'bob', streams: {} },
+    },
+    permissions: ['present'],
+    up: {
+      up1: api.makeStream('up1'),
+    },
+    down: {
+      down1: api.makeStream('down1'),
+    },
+    pingHandler,
+    livenessTimeoutStreak: 2,
+    socket: { readyState: 3 },
+    onuser(id, kind) {
+      api.calls.onuser.push([id, kind]);
+    },
+    onjoined(kind, group) {
+      api.calls.onjoined.push([kind, group]);
+    },
+    onclose(code, reason) {
+      api.calls.onclose.push([code, reason]);
+    },
+  };
+
+  api.handleSocketClose(sc, { code: 1006, reason: 'network' });
+
+  assert.deepEqual(api.calls.closedStreams, ['up1', 'down1']);
+  assert.deepEqual(api.calls.clearedIntervals, [pingHandler]);
+  assert.deepEqual(Object.keys(sc.users), ['alice', 'bob']);
+  assert.deepEqual(sc.permissions, ['present']);
+  assert.equal(sc.group, 'room');
+  assert.equal(sc.username, 'alice');
+  assert.deepEqual(api.calls.onuser, []);
+  assert.deepEqual(api.calls.onjoined, []);
+  assert.deepEqual(api.calls.onclose, [[1006, 'network']]);
+  assert.equal(sc.pingHandler, null);
+  assert.equal(sc.livenessTimeoutStreak, 0);
+  assert.equal(sc.socket, null);
 });
