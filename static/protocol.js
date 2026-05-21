@@ -703,6 +703,10 @@ ServerConnection.prototype.send = function(m) {
 };
 
 function handleSocketClose(sc, e) {
+    sc.permissions = [];
+    sc.group = null;
+    sc.username = null;
+    sc.users = {};
     for (const id in sc.up) {
         const c = sc.up[id];
         c.close();

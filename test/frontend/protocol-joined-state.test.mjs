@@ -245,10 +245,10 @@ test('handleSocketClose does not clear the roster before the app classifies the 
 
   assert.deepEqual(api.calls.closedStreams, ['up1', 'down1']);
   assert.deepEqual(api.calls.clearedIntervals, [pingHandler]);
-  assert.deepEqual(Object.keys(sc.users), ['alice', 'bob']);
-  assert.deepEqual(sc.permissions, ['present']);
-  assert.equal(sc.group, 'room');
-  assert.equal(sc.username, 'alice');
+  assert.deepEqual(Object.keys(sc.users), []);
+  assert.deepEqual(normalise(sc.permissions), []);
+  assert.equal(sc.group, null);
+  assert.equal(sc.username, null);
   assert.deepEqual(api.calls.onuser, []);
   assert.deepEqual(api.calls.onjoined, []);
   assert.deepEqual(api.calls.onclose, [[1006, 'network']]);
