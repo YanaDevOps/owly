@@ -178,6 +178,78 @@ function buildReconnectApi() {
   };
 }
 
+function buildTransportRecoveryApi() {
+  let timerId = 0;
+  const timers = new Map();
+  const calls = {
+    replaceCameraStream: 0,
+    closeConnectionIfOpen: [],
+  };
+
+  const context = vm.createContext({
+    console,
+    Date,
+    Map,
+    serverConnection: { id: 'conn-1' },
+    streamUiHealth: new Map(),
+    setTimeout(fn, delay) {
+      timerId += 1;
+      timers.set(timerId, { fn, delay });
+      return timerId;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+    replaceCameraStream() {
+      calls.replaceCameraStream += 1;
+      return Promise.resolve();
+    },
+    closeConnectionIfOpen(connection, reason, internalError) {
+      calls.closeConnectionIfOpen.push({
+        connection,
+        reason,
+        internalError,
+      });
+    },
+    setMediaStatus() {},
+  });
+
+  const snippet = [
+    'let serverConnection = { id: "conn-1" };',
+    'let streamUiHealth = new Map();',
+    extractConst('participantConnectionPoorGracePeriod'),
+    extractConst('mediaTransportRecoveryDelayMs'),
+    extractConst('mediaTransportRecoveryFailedDelayMs'),
+    extractConst('mediaTransportRecoveryCooldownMs'),
+    extractConst('mediaTransportRecoveryRepublishCooldownMs'),
+    extractFunction('getOrCreateStreamUiHealth'),
+    extractFunction('clearStreamUiHealthTimer'),
+    extractFunction('scheduleStreamUiGraceRefresh'),
+    extractFunction('getStreamConnectionHealth'),
+    extractFunction('getOrCreateTransportRecoveryState'),
+    extractFunction('resetTransportRecovery'),
+    extractFunction('runTransportRecovery'),
+    extractFunction('scheduleTransportRecovery'),
+    extractFunction('handleTransportStatus'),
+    'this.__exports = {',
+    '  runTransportRecovery,',
+    '  handleTransportStatus,',
+    '  getOrCreateTransportRecoveryState,',
+    '  setNow(value) { Date.now = () => value; },',
+    '  getTimerDelays() { return Array.from(__timers.values()).map(timer => timer.delay); },',
+    '};',
+  ].join('\n\n');
+
+  context.__timers = timers;
+  const realNow = Date.now;
+  context.Date.now = () => realNow();
+  vm.runInContext(snippet, context);
+  return {
+    ...context.__exports,
+    calls,
+  };
+}
+
 function makeClassList(initial = []) {
   const values = new Set(initial);
   return {
@@ -1286,6 +1358,50 @@ test('scheduleReconnect arms silent reconnect timer using reconnect state', () =
 
   api.runFirstTimer();
   assert.deepEqual(Array.from(api.connectTriggers), ['reconnect']);
+});
+
+test('handleTransportStatus waits for disconnected state to become poor before scheduling recovery', () => {
+  const api = buildTransportRecoveryApi();
+  api.setNow(1000);
+  const stream = {
+    sc: { id: 'conn-1' },
+    userdata: {},
+    localId: '0',
+    label: 'camera',
+    up: true,
+    pc: {
+      iceConnectionState: 'disconnected',
+    },
+  };
+
+  api.handleTransportStatus(stream, 'disconnected');
+
+  assert.deepEqual(Array.from(api.getTimerDelays()), [5000]);
+});
+
+test('runTransportRecovery does not escalate while ICE is checking', () => {
+  const api = buildTransportRecoveryApi();
+  api.setNow(1000);
+  const stream = {
+    sc: { id: 'conn-1' },
+    userdata: {},
+    localId: '0',
+    label: 'camera',
+    up: true,
+    restartIce() {},
+    pc: {
+      iceConnectionState: 'checking',
+    },
+  };
+  const state = api.getOrCreateTransportRecoveryState(stream);
+  state.step = 1;
+  state.lastActionAt = 0;
+
+  api.runTransportRecovery(stream);
+
+  assert.equal(api.calls.replaceCameraStream, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.calls.closeConnectionIfOpen)), []);
+  assert.deepEqual(Array.from(api.getTimerDelays()), []);
 });
 
 test('shouldAutoReconnectAfterClose skips client-requested and join-failed closes', () => {

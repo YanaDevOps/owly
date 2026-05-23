@@ -4392,6 +4392,10 @@ function runTransportRecovery(c) {
         resetTransportRecovery(c);
         return;
     }
+    if (iceState === 'new' || iceState === 'checking')
+        return;
+    if (iceState === 'disconnected' && getStreamConnectionHealth(c) !== 'poor')
+        return;
 
     const now = Date.now();
     if (state.lastActionAt &&
@@ -4478,6 +4482,8 @@ function handleTransportStatus(c, status) {
         scheduleTransportRecovery(c, mediaTransportRecoveryFailedDelayMs);
         return;
     case 'disconnected':
+        if (getStreamConnectionHealth(c) !== 'poor')
+            return;
         scheduleTransportRecovery(c, mediaTransportRecoveryDelayMs);
         return;
     default:
